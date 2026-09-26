@@ -96,6 +96,10 @@ pub enum Criteria {
     /// Per-file limits on the difference, in units of full scale (+-1.0).
     /// Frame info must still match exactly.
     Tolerance { max_abs: f64, max_rms: f64 },
+    /// Only frame structure (boundaries, info, sample counts) must match;
+    /// PCM differences are measured but not limited. For corrupt and
+    /// out-of-spec streams, where values can be far beyond full scale.
+    Structure,
 }
 
 impl Criteria {

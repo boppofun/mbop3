@@ -46,7 +46,7 @@ impl Decoder {
     pub const fn new() -> Self {
         Decoder {
             mdct_overlap: [[0.0; 288]; 2],
-            synth_hist: [[0.0; 64]; HIST_ROWS],
+            synth_hist: [0.0; HIST_ROWS * 64],
             reserv: 0,
             free_format_bytes: 0,
             header: [0; 4],
@@ -74,7 +74,7 @@ impl Decoder {
     /// Resets the stream state, as when starting a new stream.
     fn reset(&mut self) {
         self.mdct_overlap = [[0.0; 288]; 2];
-        self.synth_hist = [[0.0; 64]; HIST_ROWS];
+        self.synth_hist = [0.0; HIST_ROWS * 64];
         self.reserv = 0;
         self.free_format_bytes = 0;
         self.header = [0; 4];

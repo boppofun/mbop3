@@ -85,27 +85,20 @@ pub(crate) const HIST_ROWS: usize = 18;
 
 /// The synthesis history: `HIST_ROWS` rows of 16 groups of 4 columns (left
 /// even band, right even, left odd, right odd).
-pub(crate) type Hist = [[f32; 64]; HIST_ROWS];
+pub(crate) type Hist = [f32; HIST_ROWS * 64];
 
-/// Physical history row of row `m` relative to band pair `xl`. Computed
-/// where it is used so the compiler knows it is in bounds.
-#[inline(always)]
-fn row(xl: usize, m: usize) -> usize {
-    (xl + m) % HIST_ROWS
-}
-
-/// Column `c` of the last group of 4 columns, over rows `m0..m0 + 15`.
+/// Column `c` of the last group of 4 columns, over rows `m0..m0 + 15` of `rows`.
 #[inline(always)]
 fn synth_pair<S: Sample>(
     out: &mut [S],
     p: usize,
     nch: usize,
     h: &Hist,
-    xl: usize,
+    rows: &[usize; 17],
     m0: usize,
     c: usize,
 ) {
-    let z = |m: usize, c: usize| h[row(xl, m0 + m)][60 + c];
+    let z = |m: usize, c: usize| h[rows[m0 + m] + 60 + c];
     let mut a;
     a = (z(14, c) - z(0, c)) * 29.0;
     a += (z(1, c) + z(13, c)) * 213.0;
@@ -129,78 +122,168 @@ fn synth_pair<S: Sample>(
     out[p + 16 * nch] = S::from_synth(a);
 }
 
+/// The window sums for history columns `c` and `c + 2` (one channel's even
+/// and odd band) of the group of 4 columns at `c & !3`: (a_c, b_c, a_c2, b_c2).
+///
+/// minimp3 starts with (k = 0)
+///   b = z*w1 + y*w0; a = z*w0 - y*w1
+/// then for k = 1..8 adds b += z*w1 + y*w0 and, for even k, a += z*w0 - y*w1
+/// or, for odd k, a += y*w1 - z*w0, which is exactly a -= z*w0 - y*w1.
+#[cfg(feature = "exact")]
+#[inline(always)]
+fn accumulate(h: &Hist, rows: &[usize; 17], w: &[f32; 16], c: usize) -> (f32, f32, f32, f32) {
+    let load = |m: usize| -> (f32, f32) {
+        let v: &[f32; 3] = h[rows[m] + c..rows[m] + c + 3].try_into().unwrap();
+        (v[0], v[2])
+    };
+    let ((z0, z2), (y0, y2)) = (load(15), load(0));
+    let (w0, w1) = (w[0], w[1]);
+    let (mut b0, mut a0) = (z0 * w1 + y0 * w0, z0 * w0 - y0 * w1);
+    let (mut b2, mut a2) = (z2 * w1 + y2 * w0, z2 * w0 - y2 * w1);
+    // The four chains are independent; their operations are interleaved so a
+    // simple in-order FPU (the ESP32-S3's) isn't stalled waiting on each result.
+    macro_rules! step {
+        ($k:expr, $sub:tt) => {{
+            let ((z0, z2), (y0, y2)) = (load(15 - $k), load($k));
+            let (w0, w1) = (w[2 * $k], w[2 * $k + 1]);
+            let (p0, p2, q0, q2) = (z0 * w1, z2 * w1, z0 * w0, z2 * w0);
+            let (s0, s2) = (p0 + y0 * w0, p2 + y2 * w0);
+            let (t0, t2) = (q0 - y0 * w1, q2 - y2 * w1);
+            b0 += s0;
+            b2 += s2;
+            a0 $sub t0;
+            a2 $sub t2;
+        }};
+    }
+    let mut k = 1;
+    loop {
+        step!(k, -=); // odd k
+        if k == 7 {
+            return (a0, b0, a2, b2);
+        }
+        step!(k + 1, +=); // even k
+        k += 2;
+    }
+}
+
+/// The window sums for history columns `c` and `c + 2` (one channel's even
+/// and odd band) of the group of 4 columns at `c & !3`: (a_c, b_c, a_c2, b_c2).
+///
+/// Same sums as minimp3 (see the "exact" version), but each is split into two
+/// independent multiply-accumulate chains (z and y terms) that are added at
+/// the end. The ESP32-S3's FPU has ~4 cycles of latency, and minimp3's
+/// `b += z*w1 + y*w0` makes every operation wait for the previous one.
+#[cfg(not(feature = "exact"))]
+#[inline(always)]
+fn accumulate(h: &Hist, rows: &[usize; 17], w: &[f32; 16], c: usize) -> (f32, f32, f32, f32) {
+    const LEN: usize = HIST_ROWS * 64;
+    let load = |r: usize| -> (f32, f32) {
+        let v: &[f32; 3] = h[r..r + 3].try_into().unwrap();
+        (v[0], v[2])
+    };
+    // Offsets of rows 15 - k (z) and k (y), stepped through the ring.
+    let mut rz = rows[15] + c;
+    let mut ry = rows[0] + c;
+    let ((z0, z2), (y0, y2)) = (load(rz), load(ry));
+    let (w0, w1) = (w[0], w[1]);
+    let (mut bz0, mut by0, mut az0, mut ay0) = (z0 * w1, y0 * w0, z0 * w0, -(y0 * w1));
+    let (mut bz2, mut by2, mut az2, mut ay2) = (z2 * w1, y2 * w0, z2 * w0, -(y2 * w1));
+    macro_rules! step {
+        ($k:expr, $zsign:tt, $ysign:tt) => {{
+            rz = if rz >= 64 { rz - 64 } else { rz + LEN - 64 };
+            ry = if ry + 64 >= LEN { ry + 64 - LEN } else { ry + 64 };
+            let ((z0, z2), (y0, y2)) = (load(rz), load(ry));
+            let (w0, w1) = (w[2 * $k], w[2 * $k + 1]);
+            bz0 += z0 * w1;
+            by0 += y0 * w0;
+            az0 $zsign z0 * w0;
+            ay0 $ysign y0 * w1;
+            bz2 += z2 * w1;
+            by2 += y2 * w0;
+            az2 $zsign z2 * w0;
+            ay2 $ysign y2 * w1;
+        }};
+    }
+    let mut k = 1;
+    loop {
+        step!(k, -=, +=); // odd k: a -= z*w0 - y*w1
+        if k == 7 {
+            return (az0 + ay0, bz0 + by0, az2 + ay2, bz2 + by2);
+        }
+        step!(k + 1, +=, -=); // even k: a += z*w0 - y*w1
+        k += 2;
+    }
+}
+
 /// Synthesizes 2 x 32 output samples per channel from subband sample rows
 /// `xl` and `xl + 1` of `g` into `out` (64 samples per channel).
-#[inline(always)]
+#[inline(never)]
 fn synth<S: Sample, const NCH: usize>(g: &[f32; 1152], xl: usize, out: &mut [S], h: &mut Hist) {
     let stereo = NCH == 2;
     let xr = xl + 576 * (NCH - 1);
     let (dl, dr) = (0, NCH - 1);
-    let (r14, r15, r16) = (row(xl, 14), row(xl, 15), row(xl, 16));
-
-    h[r15][60] = g[xl + 18 * 16];
-    h[r15][62] = g[xl];
-    h[r16][60] = g[xl + 1 + 18 * 16];
-    h[r16][62] = g[xl + 1];
-    if stereo {
-        h[r15][61] = g[xr + 18 * 16];
-        h[r15][63] = g[xr];
-        h[r16][61] = g[xr + 1 + 18 * 16];
-        h[r16][63] = g[xr + 1];
-        synth_pair(out, dr, NCH, h, xl, 0, 1);
-        synth_pair(out, dr + 32 * NCH, NCH, h, xl, 1, 1);
+    // Offsets in `h` of the rows xl..=xl + 16 (see HIST_ROWS).
+    let mut rows = [0usize; 17];
+    let mut r = xl % HIST_ROWS;
+    for row in rows.iter_mut() {
+        *row = r * 64;
+        r = if r == HIST_ROWS - 1 { 0 } else { r + 1 };
     }
-    synth_pair(out, dl, NCH, h, xl, 0, 0);
-    synth_pair(out, dl + 32 * NCH, NCH, h, xl, 1, 0);
+    let (r14, r15, r16) = (rows[14], rows[15], rows[16]);
 
+    h[r15 + 60] = g[xl + 18 * 16];
+    h[r15 + 62] = g[xl];
+    h[r16 + 60] = g[xl + 1 + 18 * 16];
+    h[r16 + 62] = g[xl + 1];
+    if stereo {
+        h[r15 + 61] = g[xr + 18 * 16];
+        h[r15 + 63] = g[xr];
+        h[r16 + 61] = g[xr + 1 + 18 * 16];
+        h[r16 + 63] = g[xr + 1];
+        synth_pair(out, dr, NCH, h, &rows, 0, 1);
+        synth_pair(out, dr + 32 * NCH, NCH, h, &rows, 1, 1);
+    }
+    synth_pair(out, dl, NCH, h, &rows, 0, 0);
+    synth_pair(out, dl + 32 * NCH, NCH, h, &rows, 1, 0);
+
+    // g indices of the values copied into the history for position i.
+    let mut hi = 18 * (31 - 14); // 18 * (31 - i)
+    let mut lo = 18 * (1 + 14); // 18 * (1 + i)
     for i in (0..15).rev() {
         let q = 4 * i;
-        h[r15][q] = g[xl + 18 * (31 - i)];
-        h[r15][q + 2] = g[xl + 1 + 18 * (31 - i)];
-        h[r16][q] = g[xl + 1 + 18 * (1 + i)];
-        h[r14][q + 2] = g[xl + 18 * (1 + i)];
+        h[r15 + q] = g[xl + hi];
+        h[r15 + q + 2] = g[xl + 1 + hi];
+        h[r16 + q] = g[xl + 1 + lo];
+        h[r14 + q + 2] = g[xl + lo];
         if stereo {
-            h[r15][q + 1] = g[xr + 18 * (31 - i)];
-            h[r15][q + 3] = g[xr + 1 + 18 * (31 - i)];
-            h[r16][q + 1] = g[xr + 1 + 18 * (1 + i)];
-            h[r14][q + 3] = g[xr + 18 * (1 + i)];
+            h[r15 + q + 1] = g[xr + hi];
+            h[r15 + q + 3] = g[xr + 1 + hi];
+            h[r16 + q + 1] = g[xr + 1 + lo];
+            h[r14 + q + 3] = g[xr + lo];
         }
+        hi += 18;
+        lo -= 18;
 
-        let mut a = [0f32; 4];
-        let mut b = [0f32; 4];
-        let w = &G_WIN[16 * (14 - i)..16 * (14 - i) + 16];
-        // minimp3's S0 (k = 0), then S2 (odd k) and S1 (even k).
-        for k in 0..8 {
-            let (w0, w1) = (w[2 * k], w[2 * k + 1]);
-            let vz: &[f32; 4] = h[row(xl, 15 - k)][q..q + 4].try_into().unwrap();
-            let vy: &[f32; 4] = h[row(xl, k)][q..q + 4].try_into().unwrap();
-            for j in (0..4).step_by(if stereo { 1 } else { 2 }) {
-                let (z, y) = (vz[j], vy[j]);
-                if k == 0 {
-                    b[j] = z * w1 + y * w0;
-                    a[j] = z * w0 - y * w1;
-                } else if k % 2 == 1 {
-                    b[j] += z * w1 + y * w0;
-                    a[j] += y * w1 - z * w0;
-                } else {
-                    b[j] += z * w1 + y * w0;
-                    a[j] += z * w0 - y * w1;
-                }
-            }
-        }
+        let w: &[f32; 16] = G_WIN[16 * (14 - i)..16 * (14 - i) + 16].try_into().unwrap();
+        let (a0, b0, a2, b2) = accumulate(h, &rows, w, q);
+        let (a1, b1, a3, b3) = if stereo {
+            accumulate(h, &rows, w, q + 1)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
 
         if stereo {
-            out[dr + (15 - i) * NCH] = S::from_synth(a[1]);
-            out[dr + (17 + i) * NCH] = S::from_synth(b[1]);
+            out[dr + (15 - i) * NCH] = S::from_synth(a1);
+            out[dr + (17 + i) * NCH] = S::from_synth(b1);
         }
-        out[dl + (15 - i) * NCH] = S::from_synth(a[0]);
-        out[dl + (17 + i) * NCH] = S::from_synth(b[0]);
+        out[dl + (15 - i) * NCH] = S::from_synth(a0);
+        out[dl + (17 + i) * NCH] = S::from_synth(b0);
         if stereo {
-            out[dr + (47 - i) * NCH] = S::from_synth(a[3]);
-            out[dr + (49 + i) * NCH] = S::from_synth(b[3]);
+            out[dr + (47 - i) * NCH] = S::from_synth(a3);
+            out[dr + (49 + i) * NCH] = S::from_synth(b3);
         }
-        out[dl + (47 - i) * NCH] = S::from_synth(a[2]);
-        out[dl + (49 + i) * NCH] = S::from_synth(b[2]);
+        out[dl + (47 - i) * NCH] = S::from_synth(a2);
+        out[dl + (49 + i) * NCH] = S::from_synth(b2);
     }
 }
 
@@ -226,4 +309,16 @@ pub(crate) fn synth_granule<S: Sample>(
             }
         }
     });
+}
+
+#[cfg(feature = "profile")]
+pub(crate) fn bench_synth_only(h: &mut Hist, g: &[f32; 1152], pcm: &mut [i16; 1152]) {
+    for xl in (0..18).step_by(2) {
+        synth::<i16, 1>(g, xl, &mut pcm[32 * xl..32 * xl + 64], h);
+    }
+}
+
+#[cfg(feature = "profile")]
+pub(crate) fn bench_dct_ii(g: &mut [f32; 1152]) {
+    dct_ii((&mut g[..576]).try_into().unwrap(), 18);
 }

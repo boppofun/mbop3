@@ -18,3 +18,8 @@ pub unsafe extern "C" fn mbop3_sizecheck_decode(
     let (dec, mp3, pcm) = unsafe { (&mut *dec, core::slice::from_raw_parts(mp3, len), &mut *pcm) };
     dec.decode_frame(mp3, Some(pcm)).0
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mbop3_sizecheck_bench_fpu() -> u32 {
+    mbop3::profile::bench_fpu()[1]
+}

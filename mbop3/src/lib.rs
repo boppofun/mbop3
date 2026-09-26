@@ -73,15 +73,13 @@ pub trait Sample: Copy + Default + private::Sealed {
 impl Sample for i16 {
     #[inline]
     fn from_synth(sample: f32) -> i16 {
-        if sample >= 32766.5 {
-            return 32767;
-        }
-        if sample <= -32767.5 {
-            return -32768;
-        }
-        // In range here, so this is the same as `as i16` without its saturation checks.
-        let s = (sample + 0.5) as i32 as i16;
-        s - (s < 0) as i16 // away from zero, to be compliant
+        // minimp3: 32767 if >= 32766.5, -32768 if <= -32767.5, otherwise
+        // (sample + 0.5) truncated, minus 1 if negative ("away from zero").
+        // Converting and clamping to +-32767 first gives the same results
+        // (including NaN -> 0 and infinities, which corrupt streams produce)
+        // without float compares.
+        let s = ((sample + 0.5) as i32).clamp(-32767, 32767);
+        (s - (s < 0) as i32) as i16
     }
 }
 

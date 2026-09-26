@@ -264,12 +264,21 @@ fn check(args: &[String]) -> i32 {
                         files: 1,
                         ..Default::default()
                     };
+                    // Tolerances are defined for conformant streams only.
+                    let name = job.path.file_name().unwrap_or_default().to_string_lossy();
+                    let out_of_spec = matches!(job.kind, JobKind::Mutant { .. })
+                        || name.contains("nonstandard")
+                        || name.contains("ILL");
+                    let criteria = match o.criteria {
+                        Criteria::Tolerance { .. } if out_of_spec => Criteria::Structure,
+                        c => c,
+                    };
                     let runs = drivers.iter().flat_map(|&d| [(d, false), (d, true)]);
                     for (driver, float) in runs {
                         let (stats, mismatch) = if float {
-                            compare_catching::<f32, Mbop3, RefF32>(&data, driver, o.criteria)
+                            compare_catching::<f32, Mbop3, RefF32>(&data, driver, criteria)
                         } else {
-                            compare_catching::<i16, Mbop3, RefI16>(&data, driver, o.criteria)
+                            compare_catching::<i16, Mbop3, RefI16>(&data, driver, criteria)
                         };
                         local.frames += stats.frames;
                         local.samples += stats.samples;
@@ -299,7 +308,10 @@ fn check(args: &[String]) -> i32 {
 
     let criteria = match o.criteria {
         Criteria::Exact => "bit-exact",
-        Criteria::Tolerance { .. } => "ISO full-accuracy tolerance",
+        Criteria::Tolerance { .. } => {
+            "ISO full accuracy tolerance; structure only for mutated/nonstandard/ILL"
+        }
+        Criteria::Structure => "structure only",
     };
     println!(
         "mbop3 vs minimp3 ({criteria}), i16 and f32 output, drivers: slice + window{}",

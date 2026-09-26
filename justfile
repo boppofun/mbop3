@@ -4,6 +4,8 @@ minimp3_commit := `cat reference/minimp3/COMMIT`
 # Boppo's device files: real-world 48 kHz mono speech/music mp3s (local only, not redistributable).
 boppo_corpus := env_var_or_default("BOPPO_CORPUS", env_var("HOME") / "Projects/boppo/device_files/build/sd")
 regress := "target/release/mbop3-regress"
+# Built with mbop3's "exact" feature (minimp3's float evaluation order).
+regress_exact := "target/exact/release/mbop3-regress"
 tiers := "iso=corpus/external/minimp3/vectors generated=corpus/generated"
 
 default:
@@ -25,20 +27,26 @@ gen-corpus:
 
 build:
     cargo build --release --workspace
+    cargo build --release -p mbop3-regress --features exact --target-dir target/exact
 
 # Unit tests plus the fast regression check. Run before every commit.
 test: build
     cargo test --release --workspace -q
     just check
 
-# Per-commit regression: bit-exact vs C minimp3 on ISO vectors, generated corpus,
-# 300 Boppo files and 10 mutations per file, plus ISO .pcm compliance.
-check criteria="exact": build
-    {{regress}} check --criteria {{criteria}} --mutations 10 {{tiers}} boppo={{boppo_corpus}}:300
+# Per-commit regression, in two passes over the ISO vectors, the generated corpus,
+# 300 Boppo files and 10 mutations per file (plus ISO .pcm compliance):
+#  1. the "exact" build must be bit-identical to C minimp3;
+#  2. the default (fast) build must be within the ISO 11172-4 full accuracy
+#     limits of C minimp3.
+check: build
+    {{regress_exact}} check --criteria exact --mutations 10 {{tiers}} boppo={{boppo_corpus}}:300
+    {{regress}} check --criteria iso --mutations 10 {{tiers}} boppo={{boppo_corpus}}:300
 
 # Everything: the whole Boppo corpus and 100 mutations per file.
-check-full criteria="exact": build
-    {{regress}} check --criteria {{criteria}} --mutations 100 {{tiers}} boppo={{boppo_corpus}}
+check-full: build
+    {{regress_exact}} check --criteria exact --mutations 100 {{tiers}} boppo={{boppo_corpus}}
+    {{regress}} check --criteria iso --mutations 100 {{tiers}} boppo={{boppo_corpus}}
 
 # Host decode speed of mbop3 vs C minimp3.
 bench: build

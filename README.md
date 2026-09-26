@@ -47,12 +47,19 @@ Corpus tiers:
 - **mutated**: deterministic corruptions of the iso and generated files (truncation, bit flips,
   garbage, inserted junk, splices of two files, header bit flips), generated in memory.
 
-Criteria:
+Criteria (`just check` runs both):
 
-- `just check` (default, `exact`): every sample must be bit-identical to C minimp3.
-- `just check iso`: ISO 11172-4 "full accuracy" limits relative to C minimp3
-  (RMS error < 2^-15/sqrt(12) of full scale, max error 2^-14), with frame info still exact.
-  For optimizations that change floating point evaluation order.
+1. **exact**: built with mbop3's `exact` feature, which evaluates floating point in exactly
+   minimp3's order. Every sample must be bit-identical to C minimp3, for i16 and f32 output,
+   on every tier including the mutated one.
+2. **iso**: the default (fast) build, which reorders some floating point sums for speed on the
+   ESP32-S3. Output must be within the ISO/IEC 11172-4 "full accuracy" limits of C minimp3
+   (RMS error < 2^-15/sqrt(12) of full scale, every sample within 2^-14, i.e. 2 LSB at 16 bit),
+   with frame info exactly equal. For mutated and nonstandard/ILL streams (corrupt or out of
+   spec, with values far beyond full scale) only the frame structure must match.
+
+Note that neither C minimp3 nor mbop3 is bit-exact on the ESP32-S3 itself: both gcc and the
+Xtensa LLVM backend fuse multiply-adds into `madd.s`. See `metrics/device.md`.
 
 ### Reference build notes
 
@@ -61,6 +68,19 @@ minimp3 reads its uninitialized stack scratch buffer on some corrupt streams (MS
 with `-ftrivial-auto-var-init=zero`, which makes it deterministic and matches the translation
 (c2rust zero-initializes locals). It is also built with `-ffp-contract=off` so C float math is
 plain IEEE single precision like Rust's.
+
+## Using it on the ESP32-S3
+
+- Create the decoder with `Decoder::new_boxed()` (feature `alloc`) or put it in a `static`:
+  `Box::new(Decoder::new())` builds the 12 KB decoder on the stack first on Xtensa.
+- Build mbop3 with `opt-level = "s"`: the 16 KB instruction cache makes it faster than `3`.
+  In the firmware's Cargo.toml:
+  ```toml
+  [profile.release.package.mbop3]
+  opt-level = "s"
+  ```
+- The decoder can live in PSRAM: its working set fits in the data cache (measured no
+  difference vs internal RAM).
 
 ## License
 

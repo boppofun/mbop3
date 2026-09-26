@@ -8,3 +8,6 @@ publish = false
 [dependencies]
 mbop3 = { path = "../mbop3", features = ["alloc"] }
 mbop3-reference = { path = "../reference" }
+
+[features]
+exact = ["mbop3/exact"]
