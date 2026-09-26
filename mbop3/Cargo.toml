@@ -11,6 +11,8 @@ keywords = ["mp3", "decoder", "audio", "no_std", "embedded"]
 # Decoder::new_boxed(), which allocates the decoder zeroed on the heap instead
 # of building it on the stack first.
 alloc = ["dep:zerocopy", "zerocopy/alloc"]
+# Per-stage cycle counters (mbop3::profile), for tuning. Development only.
+profile = []
 
 [dependencies]
 zerocopy = { version = "0.8", default-features = false, features = ["derive"], optional = true }

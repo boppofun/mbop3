@@ -34,6 +34,31 @@ fn main() {
         Some("bench") => bench(&args[1..]),
         Some("stack") => stack_cmd(&args[1..]),
         Some("sizes") => sizes(),
+        Some("hash") => {
+            // hash FILE SKIP COUNT: FNV-1a of decoded i16 samples [SKIP, SKIP+COUNT)
+            // for mbop3 and minimp3 (to compare with the device's perf test).
+            let data = std::fs::read(&args[1]).unwrap();
+            let skip: usize = args[2].parse().unwrap();
+            let count: usize = args[3].parse().unwrap();
+            let h = |pcm: &[i16]| {
+                let mut hash: u64 = 0xcbf29ce484222325;
+                for s in &pcm[skip..skip + count] {
+                    for b in s.to_le_bytes() {
+                        hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+                    }
+                }
+                hash
+            };
+            println!(
+                "mbop3   {:016x}",
+                h(&run::decode_all::<i16, Mbop3>(&data).0)
+            );
+            println!(
+                "minimp3 {:016x}",
+                h(&run::decode_all::<i16, RefI16>(&data).0)
+            );
+            0
+        }
         Some("mutant") => {
             // mutant FILE OTHER SEED OUT: writes a mutated input for debugging.
             let a = std::fs::read(&args[1]).unwrap();

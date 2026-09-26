@@ -3,7 +3,7 @@
 use crate::Sample;
 use crate::tables::{G_SEC, G_WIN};
 
-fn dct_ii(g: &mut [f32], n: usize) {
+fn dct_ii(g: &mut [f32; 576], n: usize) {
     for k in 0..n {
         let mut t = [[0f32; 8]; 4];
         for i in 0..8 {
@@ -82,20 +82,30 @@ fn dct_ii(g: &mut [f32], n: usize) {
 /// granule (which matters if a stream switches to stereo). Not writing the
 /// right columns in mono reproduces that exactly.
 pub(crate) const HIST_ROWS: usize = 18;
-pub(crate) const HIST_LEN: usize = HIST_ROWS * 64;
 
-/// `rows[m]` is the offset in the history of row m (relative to the current
-/// band pair). Column `c` of the 16th group of 4 columns.
+/// The synthesis history: `HIST_ROWS` rows of 16 groups of 4 columns (left
+/// even band, right even, left odd, right odd).
+pub(crate) type Hist = [[f32; 64]; HIST_ROWS];
+
+/// Physical history row of row `m` relative to band pair `xl`. Computed
+/// where it is used so the compiler knows it is in bounds.
+#[inline(always)]
+fn row(xl: usize, m: usize) -> usize {
+    (xl + m) % HIST_ROWS
+}
+
+/// Column `c` of the last group of 4 columns, over rows `m0..m0 + 15`.
 #[inline(always)]
 fn synth_pair<S: Sample>(
-    pcm: &mut [S],
+    out: &mut [S],
     p: usize,
     nch: usize,
-    h: &[f32; HIST_LEN],
-    rows: &[usize],
+    h: &Hist,
+    xl: usize,
+    m0: usize,
     c: usize,
 ) {
-    let z = |m: usize, c: usize| h[rows[m] + 60 + c];
+    let z = |m: usize, c: usize| h[row(xl, m0 + m)][60 + c];
     let mut a;
     a = (z(14, c) - z(0, c)) * 29.0;
     a += (z(1, c) + z(13, c)) * 213.0;
@@ -105,7 +115,7 @@ fn synth_pair<S: Sample>(
     a += (z(5, c) + z(9, c)) * 6574.0;
     a += (z(8, c) - z(6, c)) * 37489.0;
     a += z(7, c) * 75038.0;
-    pcm[p] = S::from_synth(a);
+    out[p] = S::from_synth(a);
 
     let c = c + 2;
     a = z(14, c) * 104.0;
@@ -116,67 +126,56 @@ fn synth_pair<S: Sample>(
     a += z(4, c) * -45.0;
     a += z(2, c) * 146.0;
     a += z(0, c) * -5.0;
-    pcm[p + 16 * nch] = S::from_synth(a);
+    out[p + 16 * nch] = S::from_synth(a);
 }
 
 /// Synthesizes 2 x 32 output samples per channel from subband sample rows
-/// `xl` and `xl + 1` of `g`, writing them to `pcm[dl..]`. `row` is the
-/// history row of this band pair (`xl`, the band pair's first band).
+/// `xl` and `xl + 1` of `g` into `out` (64 samples per channel).
 #[inline(always)]
-fn synth<S: Sample, const NCH: usize>(
-    g: &[f32],
-    xl: usize,
-    pcm: &mut [S],
-    dl: usize,
-    h: &mut [f32; HIST_LEN],
-) {
+fn synth<S: Sample, const NCH: usize>(g: &[f32; 1152], xl: usize, out: &mut [S], h: &mut Hist) {
     let stereo = NCH == 2;
     let xr = xl + 576 * (NCH - 1);
-    let dr = dl + (NCH - 1);
-    let rows: [usize; 17] = core::array::from_fn(|j| ((xl + j) % HIST_ROWS) * 64);
-    let (r14, r15, r16) = (rows[14], rows[15], rows[16]);
+    let (dl, dr) = (0, NCH - 1);
+    let (r14, r15, r16) = (row(xl, 14), row(xl, 15), row(xl, 16));
 
-    h[r15 + 60] = g[xl + 18 * 16];
-    h[r15 + 62] = g[xl];
-    h[r16 + 60] = g[xl + 1 + 18 * 16];
-    h[r16 + 62] = g[xl + 1];
+    h[r15][60] = g[xl + 18 * 16];
+    h[r15][62] = g[xl];
+    h[r16][60] = g[xl + 1 + 18 * 16];
+    h[r16][62] = g[xl + 1];
     if stereo {
-        h[r15 + 61] = g[xr + 18 * 16];
-        h[r15 + 63] = g[xr];
-        h[r16 + 61] = g[xr + 1 + 18 * 16];
-        h[r16 + 63] = g[xr + 1];
-        synth_pair(pcm, dr, NCH, h, &rows, 1);
-        synth_pair(pcm, dr + 32 * NCH, NCH, h, &rows[1..], 1);
+        h[r15][61] = g[xr + 18 * 16];
+        h[r15][63] = g[xr];
+        h[r16][61] = g[xr + 1 + 18 * 16];
+        h[r16][63] = g[xr + 1];
+        synth_pair(out, dr, NCH, h, xl, 0, 1);
+        synth_pair(out, dr + 32 * NCH, NCH, h, xl, 1, 1);
     }
-    synth_pair(pcm, dl, NCH, h, &rows, 0);
-    synth_pair(pcm, dl + 32 * NCH, NCH, h, &rows[1..], 0);
+    synth_pair(out, dl, NCH, h, xl, 0, 0);
+    synth_pair(out, dl + 32 * NCH, NCH, h, xl, 1, 0);
 
-    let mut w = 0;
     for i in (0..15).rev() {
         let q = 4 * i;
-        h[r15 + q] = g[xl + 18 * (31 - i)];
-        h[r15 + q + 2] = g[xl + 1 + 18 * (31 - i)];
-        h[r16 + q] = g[xl + 1 + 18 * (1 + i)];
-        h[r14 + q + 2] = g[xl + 18 * (1 + i)];
+        h[r15][q] = g[xl + 18 * (31 - i)];
+        h[r15][q + 2] = g[xl + 1 + 18 * (31 - i)];
+        h[r16][q] = g[xl + 1 + 18 * (1 + i)];
+        h[r14][q + 2] = g[xl + 18 * (1 + i)];
         if stereo {
-            h[r15 + q + 1] = g[xr + 18 * (31 - i)];
-            h[r15 + q + 3] = g[xr + 1 + 18 * (31 - i)];
-            h[r16 + q + 1] = g[xr + 1 + 18 * (1 + i)];
-            h[r14 + q + 3] = g[xr + 18 * (1 + i)];
+            h[r15][q + 1] = g[xr + 18 * (31 - i)];
+            h[r15][q + 3] = g[xr + 1 + 18 * (31 - i)];
+            h[r16][q + 1] = g[xr + 1 + 18 * (1 + i)];
+            h[r14][q + 3] = g[xr + 18 * (1 + i)];
         }
 
-        // Columns: 0 = left even band, 1 = right even, 2 = left odd, 3 = right odd.
         let mut a = [0f32; 4];
         let mut b = [0f32; 4];
+        let w = &G_WIN[16 * (14 - i)..16 * (14 - i) + 16];
         // minimp3's S0 (k = 0), then S2 (odd k) and S1 (even k).
         for k in 0..8 {
-            let w0 = G_WIN[w];
-            let w1 = G_WIN[w + 1];
-            w += 2;
-            let vz = rows[15 - k] + q;
-            let vy = rows[k] + q;
+            let (w0, w1) = (w[2 * k], w[2 * k + 1]);
+            let vz: &[f32; 4] = h[row(xl, 15 - k)][q..q + 4].try_into().unwrap();
+            let vy: &[f32; 4] = h[row(xl, k)][q..q + 4].try_into().unwrap();
             for j in (0..4).step_by(if stereo { 1 } else { 2 }) {
-                let (z, y) = (h[vz + j], h[vy + j]);
+                let (z, y) = (vz[j], vy[j]);
                 if k == 0 {
                     b[j] = z * w1 + y * w0;
                     a[j] = z * w0 - y * w1;
@@ -191,36 +190,40 @@ fn synth<S: Sample, const NCH: usize>(
         }
 
         if stereo {
-            pcm[dr + (15 - i) * NCH] = S::from_synth(a[1]);
-            pcm[dr + (17 + i) * NCH] = S::from_synth(b[1]);
+            out[dr + (15 - i) * NCH] = S::from_synth(a[1]);
+            out[dr + (17 + i) * NCH] = S::from_synth(b[1]);
         }
-        pcm[dl + (15 - i) * NCH] = S::from_synth(a[0]);
-        pcm[dl + (17 + i) * NCH] = S::from_synth(b[0]);
+        out[dl + (15 - i) * NCH] = S::from_synth(a[0]);
+        out[dl + (17 + i) * NCH] = S::from_synth(b[0]);
         if stereo {
-            pcm[dr + (47 - i) * NCH] = S::from_synth(a[3]);
-            pcm[dr + (49 + i) * NCH] = S::from_synth(b[3]);
+            out[dr + (47 - i) * NCH] = S::from_synth(a[3]);
+            out[dr + (49 + i) * NCH] = S::from_synth(b[3]);
         }
-        pcm[dl + (47 - i) * NCH] = S::from_synth(a[2]);
-        pcm[dl + (49 + i) * NCH] = S::from_synth(b[2]);
+        out[dl + (47 - i) * NCH] = S::from_synth(a[2]);
+        out[dl + (49 + i) * NCH] = S::from_synth(b[2]);
     }
 }
 
 /// Synthesizes one granule (576 samples per channel) from `g` (576 subband
 /// samples per channel) into `pcm`.
 pub(crate) fn synth_granule<S: Sample>(
-    h: &mut [f32; HIST_LEN],
-    g: &mut [f32],
+    h: &mut Hist,
+    g: &mut [f32; 1152],
     nch: usize,
     pcm: &mut [S],
 ) {
-    for i in 0..nch {
-        dct_ii(&mut g[576 * i..], 18);
-    }
-    for i in (0..18).step_by(2) {
-        if nch == 1 {
-            synth::<S, 1>(g, i, pcm, 32 * i, h);
-        } else {
-            synth::<S, 2>(g, i, pcm, 64 * i, h);
+    crate::timed!(6, {
+        for i in 0..nch {
+            dct_ii((&mut g[576 * i..576 * i + 576]).try_into().unwrap(), 18);
         }
-    }
+    });
+    crate::timed!(7, {
+        for xl in (0..18).step_by(2) {
+            if nch == 1 {
+                synth::<S, 1>(g, xl, &mut pcm[32 * xl..32 * xl + 64], h);
+            } else {
+                synth::<S, 2>(g, xl, &mut pcm[64 * xl..64 * xl + 128], h);
+            }
+        }
+    });
 }

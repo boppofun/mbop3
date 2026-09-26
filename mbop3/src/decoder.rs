@@ -3,7 +3,7 @@
 use crate::bits::BitReader;
 use crate::header::{HDR_SIZE, Header, find_frame};
 use crate::layer3::{self, GrInfo};
-use crate::synth::{HIST_LEN, synth_granule};
+use crate::synth::{HIST_ROWS, Hist, synth_granule};
 use crate::{FrameInfo, MAX_SAMPLES_PER_FRAME, Sample};
 
 const MAX_BITRESERVOIR_BYTES: usize = 511;
@@ -18,7 +18,7 @@ const MAX_BITRESERVOIR_BYTES: usize = 511;
 #[cfg_attr(feature = "alloc", derive(zerocopy::FromZeros))]
 pub struct Decoder {
     mdct_overlap: [[f32; 288]; 2],
-    synth_hist: [f32; HIST_LEN],
+    synth_hist: Hist,
     reserv: i32,
     free_format_bytes: i32,
     header: [u8; 4],
@@ -46,7 +46,7 @@ impl Decoder {
     pub const fn new() -> Self {
         Decoder {
             mdct_overlap: [[0.0; 288]; 2],
-            synth_hist: [0.0; HIST_LEN],
+            synth_hist: [[0.0; 64]; HIST_ROWS],
             reserv: 0,
             free_format_bytes: 0,
             header: [0; 4],
@@ -74,7 +74,7 @@ impl Decoder {
     /// Resets the stream state, as when starting a new stream.
     fn reset(&mut self) {
         self.mdct_overlap = [[0.0; 288]; 2];
-        self.synth_hist = [0.0; HIST_LEN];
+        self.synth_hist = [[0.0; 64]; HIST_ROWS];
         self.reserv = 0;
         self.free_format_bytes = 0;
         self.header = [0; 4];
@@ -147,7 +147,10 @@ impl Decoder {
         }
 
         let w = &mut self.work;
-        let main_data_begin = layer3::read_side_info(&mut bs_frame, &mut w.gr_info, hdr);
+        let main_data_begin = crate::timed!(
+            0,
+            layer3::read_side_info(&mut bs_frame, &mut w.gr_info, hdr)
+        );
         if main_data_begin < 0 || bs_frame.pos > bs_frame.limit {
             self.header[0] = 0;
             return (0, info);
@@ -227,21 +230,29 @@ fn decode_granule(
 ) {
     for ch in 0..nch {
         let layer3gr_limit = bs.pos + gr_info[ch].part_23_length as i32;
-        layer3::decode_scalefactors(hdr, &mut ist_pos[ch], bs, &gr_info[ch], scf, ch);
-        layer3::huffman(
-            &mut grbuf[576 * ch..],
-            bs,
-            &gr_info[ch],
-            scf,
-            layer3gr_limit,
+        crate::timed!(
+            1,
+            layer3::decode_scalefactors(hdr, &mut ist_pos[ch], bs, &gr_info[ch], scf, ch)
+        );
+        crate::timed!(
+            2,
+            layer3::huffman(
+                &mut grbuf[576 * ch..],
+                bs,
+                &gr_info[ch],
+                scf,
+                layer3gr_limit,
+            )
         );
     }
 
-    if hdr.test_i_stereo() {
-        layer3::intensity_stereo(grbuf, &mut ist_pos[1], gr_info, hdr);
-    } else if hdr.is_ms_stereo() {
-        layer3::midside_stereo(grbuf, 0, 576);
-    }
+    crate::timed!(3, {
+        if hdr.test_i_stereo() {
+            layer3::intensity_stereo(grbuf, &mut ist_pos[1], gr_info, hdr);
+        } else if hdr.is_ms_stereo() {
+            layer3::midside_stereo(grbuf, 0, 576);
+        }
+    });
 
     for ch in 0..nch {
         let gr = &gr_info[ch];
@@ -250,17 +261,20 @@ fn decode_granule(
         let n_long_bands =
             (if gr.mixed_block_flag != 0 { 2 } else { 0 }) << (hdr.my_sample_rate() == 2) as u32;
 
-        if gr.n_short_sfb != 0 {
-            aa_bands = n_long_bands as i32 - 1;
-            layer3::reorder(
-                &mut g[n_long_bands * 18..],
-                &gr.sfbtab()[gr.n_long_sfb as usize..],
-            );
-        }
-
-        layer3::antialias(g, aa_bands);
-        layer3::imdct_gr(g, &mut mdct_overlap[ch], gr.block_type, n_long_bands);
-        layer3::change_sign(g);
+        crate::timed!(4, {
+            if gr.n_short_sfb != 0 {
+                aa_bands = n_long_bands as i32 - 1;
+                layer3::reorder(
+                    &mut g[n_long_bands * 18..],
+                    &gr.sfbtab()[gr.n_long_sfb as usize..],
+                );
+            }
+            layer3::antialias(g, aa_bands);
+        });
+        crate::timed!(5, {
+            layer3::imdct_gr(g, &mut mdct_overlap[ch], gr.block_type, n_long_bands);
+            layer3::change_sign(g);
+        });
     }
 }
 

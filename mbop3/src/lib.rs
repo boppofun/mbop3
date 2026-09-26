@@ -10,7 +10,8 @@
 //! // Skip info.frame_bytes of input before the next call.
 //! ```
 #![no_std]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "profile"), forbid(unsafe_code))]
+#![cfg_attr(feature = "profile", deny(unsafe_code))]
 // Constants are kept textually identical to minimp3's, and loops mirror its
 // indexing, which keeps the output bit-exact and the code easy to compare.
 #![allow(
@@ -26,10 +27,25 @@ mod bits;
 mod decoder;
 mod header;
 mod layer3;
+#[cfg(feature = "profile")]
+pub mod profile;
 mod synth;
 mod tables;
 
 pub use decoder::Decoder;
+
+/// Times a stage when the "profile" feature is on.
+macro_rules! timed {
+    ($stage:expr, $e:expr) => {{
+        #[cfg(feature = "profile")]
+        let start = crate::profile::now();
+        let r = $e;
+        #[cfg(feature = "profile")]
+        crate::profile::add($stage, start);
+        r
+    }};
+}
+pub(crate) use timed;
 
 /// Maximum samples (all channels) a single frame can produce.
 pub const MAX_SAMPLES_PER_FRAME: usize = 1152 * 2;
@@ -63,7 +79,8 @@ impl Sample for i16 {
         if sample <= -32767.5 {
             return -32768;
         }
-        let s = (sample + 0.5) as i16;
+        // In range here, so this is the same as `as i16` without its saturation checks.
+        let s = (sample + 0.5) as i32 as i16;
         s - (s < 0) as i16 // away from zero, to be compliant
     }
 }
