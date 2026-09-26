@@ -12,9 +12,12 @@ const MAX_SCFI: i32 = (MAX_SCF + 3) & !3;
 
 /// Side info of one granule of one channel.
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "alloc", derive(zerocopy::FromZeros))]
 pub(crate) struct GrInfo {
-    /// Scalefactor band widths, 0 terminated.
-    pub sfbtab: &'static [u8],
+    /// Which scalefactor band table [`GrInfo::sfbtab`] returns: 0 long, 1 short, 2 mixed.
+    pub sfb_kind: u8,
+    /// Sample rate index of the band table.
+    pub sfb_sr: u8,
     pub part_23_length: u16,
     pub big_values: u16,
     pub scalefac_compress: u16,
@@ -33,8 +36,19 @@ pub(crate) struct GrInfo {
 }
 
 impl GrInfo {
+    /// Scalefactor band widths, 0 terminated.
+    pub fn sfbtab(&self) -> &'static [u8] {
+        let sr = self.sfb_sr as usize;
+        match self.sfb_kind {
+            0 => &G_SCF_LONG[sr],
+            1 => &G_SCF_SHORT[sr],
+            _ => &G_SCF_MIXED[sr],
+        }
+    }
+
     pub const ZERO: GrInfo = GrInfo {
-        sfbtab: &[],
+        sfb_kind: 0,
+        sfb_sr: 0,
         part_23_length: 0,
         big_values: 0,
         scalefac_compress: 0,
@@ -82,7 +96,8 @@ pub(crate) fn read_side_info(bs: &mut BitReader, grs: &mut [GrInfo; 4], hdr: Hea
         }
         gr.global_gain = bs.get_bits(8) as u8;
         gr.scalefac_compress = bs.get_bits(if hdr.test_mpeg1() { 4 } else { 9 }) as u16;
-        gr.sfbtab = &G_SCF_LONG[sr_idx];
+        gr.sfb_kind = 0;
+        gr.sfb_sr = sr_idx as u8;
         gr.n_long_sfb = 22;
         gr.n_short_sfb = 0;
         let mut tables: u32;
@@ -98,11 +113,11 @@ pub(crate) fn read_side_info(bs: &mut BitReader, grs: &mut [GrInfo; 4], hdr: Hea
                 scfsi &= 0x0F0F;
                 if gr.mixed_block_flag == 0 {
                     gr.region_count[0] = 8;
-                    gr.sfbtab = &G_SCF_SHORT[sr_idx];
+                    gr.sfb_kind = 1;
                     gr.n_long_sfb = 0;
                     gr.n_short_sfb = 39;
                 } else {
-                    gr.sfbtab = &G_SCF_MIXED[sr_idx];
+                    gr.sfb_kind = 2;
                     gr.n_long_sfb = if hdr.test_mpeg1() { 8 } else { 6 };
                     gr.n_short_sfb = 30;
                 }
@@ -287,7 +302,7 @@ pub(crate) fn huffman(
     let mut one = 0.0f32;
     let mut ireg = 0;
     let mut big_val_cnt = gr.big_values as i32;
-    let sfb = gr.sfbtab;
+    let sfb = gr.sfbtab();
     let mut sfb_i = 0;
     let mut scf_i = 0;
     let mut next = (bs.pos / 8) as usize;
@@ -504,7 +519,7 @@ pub(crate) fn intensity_stereo(g: &mut [f32], ist_pos: &mut [u8; 39], gr: &[GrIn
     let n_sfb = gr[0].n_long_sfb as usize + gr[0].n_short_sfb as usize;
     let max_blocks = if gr[0].n_short_sfb != 0 { 3 } else { 1 };
 
-    stereo_top_band(g, gr[0].sfbtab, n_sfb, &mut max_band);
+    stereo_top_band(g, gr[0].sfbtab(), n_sfb, &mut max_band);
     if gr[0].n_long_sfb != 0 {
         let m = max_band[0].max(max_band[1]).max(max_band[2]);
         max_band = [m; 3];
@@ -522,7 +537,7 @@ pub(crate) fn intensity_stereo(g: &mut [f32], ist_pos: &mut [u8; 39], gr: &[GrIn
     stereo_process(
         g,
         ist_pos,
-        gr[0].sfbtab,
+        gr[0].sfbtab(),
         hdr,
         &max_band,
         (gr[1].scalefac_compress & 1) as u32,

@@ -489,6 +489,10 @@ fn stack_cmd(args: &[String]) -> i32 {
         ours = ours.max(peak_stack::<Mbop3>(&data));
         c = c.max(peak_stack::<RefI16>(&data));
     }
+    let create = stack::measure(|| {
+        std::hint::black_box(Box::new(mbop3::Decoder::new()));
+    });
+    println!("stack to create Box<Decoder>: {create} bytes");
     println!("peak stack over {} files (host, x86_64):", files.len());
     println!("  mbop3   {ours} bytes");
     println!("  minimp3 {c} bytes");

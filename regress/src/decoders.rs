@@ -55,7 +55,7 @@ impl Decoder<i16> for Mbop3 {
         "mbop3"
     }
     fn new() -> Self {
-        Mbop3(Box::default())
+        Mbop3(mbop3::Decoder::new_boxed())
     }
     fn decode(
         &mut self,
@@ -82,7 +82,7 @@ impl Decoder<f32> for Mbop3 {
         "mbop3-f32"
     }
     fn new() -> Self {
-        Mbop3(Box::default())
+        Mbop3(mbop3::Decoder::new_boxed())
     }
     fn decode(
         &mut self,

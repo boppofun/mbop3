@@ -19,6 +19,9 @@
     clippy::needless_range_loop
 )]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 mod bits;
 mod decoder;
 mod header;

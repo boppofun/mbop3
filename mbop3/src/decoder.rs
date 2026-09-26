@@ -11,8 +11,11 @@ const MAX_BITRESERVOIR_BYTES: usize = 511;
 /// MP3 decoder state.
 ///
 /// This holds all of the decoder's memory (including per-frame working
-/// memory) so decoding uses little stack. Keep it on the heap or in a static.
+/// memory) so decoding uses little stack. Keep it on the heap
+/// ([`Decoder::new_boxed`]) or in a static: `Decoder::new()` is all zeros so
+/// a static decoder is placed in `.bss`.
 #[derive(Clone)]
+#[cfg_attr(feature = "alloc", derive(zerocopy::FromZeros))]
 pub struct Decoder {
     mdct_overlap: [[f32; 288]; 2],
     synth_hist: [f32; HIST_LEN],
@@ -25,6 +28,7 @@ pub struct Decoder {
 
 /// Working memory for one frame. Nothing here is carried between frames.
 #[derive(Clone)]
+#[cfg_attr(feature = "alloc", derive(zerocopy::FromZeros))]
 struct Work {
     gr_info: [GrInfo; 4],
     grbuf: [f32; 576 * 2],
@@ -54,6 +58,17 @@ impl Decoder {
                 ist_pos: [[0; 39]; 2],
             },
         }
+    }
+
+    /// A new decoder on the heap. Unlike `Box::new(Decoder::new())`, this never
+    /// builds the (12 KB) decoder on the stack first.
+    #[cfg(feature = "alloc")]
+    pub fn new_boxed() -> alloc::boxed::Box<Self> {
+        use zerocopy::FromZeros;
+        // All zeros is exactly Decoder::new().
+        Self::new_box_zeroed().unwrap_or_else(|_| {
+            alloc::alloc::handle_alloc_error(core::alloc::Layout::new::<Self>())
+        })
     }
 
     /// Resets the stream state, as when starting a new stream.
@@ -239,7 +254,7 @@ fn decode_granule(
             aa_bands = n_long_bands as i32 - 1;
             layer3::reorder(
                 &mut g[n_long_bands * 18..],
-                &gr.sfbtab[gr.n_long_sfb as usize..],
+                &gr.sfbtab()[gr.n_long_sfb as usize..],
             );
         }
 

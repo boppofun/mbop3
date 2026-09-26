@@ -7,4 +7,10 @@ description = "A small, no_std MP3 (MPEG-1/2/2.5 Layer III) decoder derived from
 categories = ["multimedia::audio", "no-std", "embedded"]
 keywords = ["mp3", "decoder", "audio", "no_std", "embedded"]
 
+[features]
+# Decoder::new_boxed(), which allocates the decoder zeroed on the heap instead
+# of building it on the stack first.
+alloc = ["dep:zerocopy", "zerocopy/alloc"]
+
 [dependencies]
+zerocopy = { version = "0.8", default-features = false, features = ["derive"], optional = true }

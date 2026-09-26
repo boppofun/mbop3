@@ -6,5 +6,5 @@ license.workspace = true
 publish = false
 
 [dependencies]
-mbop3 = { path = "../mbop3" }
+mbop3 = { path = "../mbop3", features = ["alloc"] }
 mbop3-reference = { path = "../reference" }
