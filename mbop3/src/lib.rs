@@ -13,7 +13,11 @@
 #![forbid(unsafe_code)]
 // Constants are kept textually identical to minimp3's, and loops mirror its
 // indexing, which keeps the output bit-exact and the code easy to compare.
-#![allow(clippy::excessive_precision, clippy::approx_constant, clippy::needless_range_loop)]
+#![allow(
+    clippy::excessive_precision,
+    clippy::approx_constant,
+    clippy::needless_range_loop
+)]
 
 mod bits;
 mod decoder;

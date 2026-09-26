@@ -279,8 +279,11 @@ pub(crate) fn huffman(
     scf: &[f32; 40],
     layer3gr_limit: i32,
 ) {
-    let buf = bs.buf;
-    let byte = |i: usize| buf.get(i).copied().unwrap_or(0) as u32;
+    let (head, tail) = bs.split_from(0);
+    let byte = |i: usize| match head.get(i) {
+        Some(b) => *b as u32,
+        None => tail.get(i - head.len()).copied().unwrap_or(0) as u32,
+    };
     let mut one = 0.0f32;
     let mut ireg = 0;
     let mut big_val_cnt = gr.big_values as i32;

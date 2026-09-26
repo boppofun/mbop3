@@ -207,14 +207,15 @@ pub fn compare<S: Sample, A: Decoder<S>, B: Decoder<S>>(
         stats.frames += 1;
     }
     if let Criteria::Tolerance { max_abs, max_rms } = criteria
-        && (stats.max_abs_diff > max_abs || stats.rms() > max_rms) {
-            let what = format!(
-                "outside tolerance: max_abs {:.3e} (limit {max_abs:.3e}) rms {:.3e} (limit {max_rms:.3e})",
-                stats.max_abs_diff,
-                stats.rms()
-            );
-            return (stats, Some(mismatch(stats.frames, 0, what)));
-        }
+        && (stats.max_abs_diff > max_abs || stats.rms() > max_rms)
+    {
+        let what = format!(
+            "outside tolerance: max_abs {:.3e} (limit {max_abs:.3e}) rms {:.3e} (limit {max_rms:.3e})",
+            stats.max_abs_diff,
+            stats.rms()
+        );
+        return (stats, Some(mismatch(stats.frames, 0, what)));
+    }
     (stats, None)
 }
 

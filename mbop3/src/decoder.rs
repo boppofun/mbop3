@@ -7,9 +7,11 @@ use crate::synth::synth_granule;
 use crate::{FrameInfo, MAX_SAMPLES_PER_FRAME, Sample};
 
 const MAX_BITRESERVOIR_BYTES: usize = 511;
-const MAX_L3_FRAME_PAYLOAD_BYTES: usize = 2304;
 
 /// MP3 decoder state.
+///
+/// This holds all of the decoder's memory (including per-frame working
+/// memory) so decoding uses little stack. Keep it on the heap or in a static.
 #[derive(Clone)]
 pub struct Decoder {
     mdct_overlap: [[f32; 288]; 2],
@@ -18,29 +20,17 @@ pub struct Decoder {
     free_format_bytes: i32,
     header: [u8; 4],
     reserv_buf: [u8; MAX_BITRESERVOIR_BYTES],
+    work: Work,
 }
 
-/// Per-frame working memory.
-struct Scratch {
-    maindata: [u8; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
+/// Working memory for one frame. Nothing here is carried between frames.
+#[derive(Clone)]
+struct Work {
     gr_info: [GrInfo; 4],
     grbuf: [f32; 576 * 2],
     scf: [f32; 40],
     syn: [f32; (18 + 15) * 64],
     ist_pos: [[u8; 39]; 2],
-}
-
-impl Scratch {
-    fn new() -> Self {
-        Scratch {
-            maindata: [0; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
-            gr_info: [GrInfo::ZERO; 4],
-            grbuf: [0.0; 576 * 2],
-            scf: [0.0; 40],
-            syn: [0.0; (18 + 15) * 64],
-            ist_pos: [[0; 39]; 2],
-        }
-    }
 }
 
 impl Default for Decoder {
@@ -58,7 +48,24 @@ impl Decoder {
             free_format_bytes: 0,
             header: [0; 4],
             reserv_buf: [0; MAX_BITRESERVOIR_BYTES],
+            work: Work {
+                gr_info: [GrInfo::ZERO; 4],
+                grbuf: [0.0; 576 * 2],
+                scf: [0.0; 40],
+                syn: [0.0; (18 + 15) * 64],
+                ist_pos: [[0; 39]; 2],
+            },
         }
+    }
+
+    /// Resets the stream state, as when starting a new stream.
+    fn reset(&mut self) {
+        self.mdct_overlap = [[0.0; 288]; 2];
+        self.qmf_state = [0.0; 960];
+        self.reserv = 0;
+        self.free_format_bytes = 0;
+        self.header = [0; 4];
+        self.reserv_buf = [0; MAX_BITRESERVOIR_BYTES];
     }
 
     /// Finds and decodes the next frame in `mp3`.
@@ -92,7 +99,7 @@ impl Decoder {
             }
         }
         if frame_size == 0 {
-            *self = Decoder::new();
+            self.reset();
             (i, frame_size) = find_frame(mp3, &mut self.free_format_bytes);
             if frame_size == 0 || i + frame_size > mp3_bytes {
                 info.frame_bytes = i;
@@ -126,133 +133,136 @@ impl Decoder {
             return (0, info);
         }
 
-        let mut s = Scratch::new();
-        let main_data_begin = layer3::read_side_info(&mut bs_frame, &mut s.gr_info, hdr);
+        let w = &mut self.work;
+        let main_data_begin = layer3::read_side_info(&mut bs_frame, &mut w.gr_info, hdr);
         if main_data_begin < 0 || bs_frame.pos > bs_frame.limit {
             self.header[0] = 0;
             return (0, info);
         }
-        let (success, maindata_len) =
-            self.restore_reservoir(&bs_frame, &mut s.maindata, main_data_begin);
-        let mut bs = BitReader::new(&s.maindata, maindata_len);
-        if success {
-            let nch = info.channels as usize;
-            let granules = if hdr.test_mpeg1() { 2 } else { 1 };
-            for igr in 0..granules {
-                s.grbuf.fill(0.0);
-                self.decode_granule(
-                    &mut bs,
-                    &s.gr_info[igr * nch..],
-                    nch,
-                    &mut s.grbuf,
-                    &mut s.scf,
-                    &mut s.ist_pos,
-                    &mut s.syn,
-                );
-                synth_granule(
-                    &mut self.qmf_state,
-                    &mut s.grbuf,
-                    18,
-                    nch,
-                    &mut pcm[igr * 576 * nch..],
-                    &mut s.syn,
-                );
+        // Scalefactor reuse (scfsi) can read these before they are written.
+        w.ist_pos = [[0; 39]; 2];
+
+        // Main data: the end of the bit reservoir, then this frame's payload
+        // after the side info.
+        let frame_start = (bs_frame.pos / 8) as usize;
+        let frame_main_len = ((bs_frame.limit - bs_frame.pos) / 8) as usize;
+        let frame_main = &payload[frame_start..frame_start + frame_main_len];
+        let bytes_have = self.reserv.min(main_data_begin) as usize;
+        let reserv_from = (self.reserv - main_data_begin).max(0) as usize;
+        let success = self.reserv >= main_data_begin;
+
+        let (save_pos, save_len) = {
+            let head = &self.reserv_buf[reserv_from..reserv_from + bytes_have];
+            let mut bs = BitReader::new_split(head, frame_main);
+            if success {
+                let nch = info.channels as usize;
+                let granules = if hdr.test_mpeg1() { 2 } else { 1 };
+                for igr in 0..granules {
+                    w.grbuf.fill(0.0);
+                    decode_granule(
+                        hdr,
+                        &mut bs,
+                        &w.gr_info[igr * nch..],
+                        nch,
+                        &mut w.grbuf,
+                        &mut w.scf,
+                        &mut w.ist_pos,
+                        &mut w.syn,
+                        &mut self.mdct_overlap,
+                    );
+                    synth_granule(
+                        &mut self.qmf_state,
+                        &mut w.grbuf,
+                        18,
+                        nch,
+                        &mut pcm[igr * 576 * nch..],
+                        &mut w.syn,
+                    );
+                }
             }
-        }
-        self.save_reservoir(&bs);
+            reservoir_to_save(&bs)
+        };
+
+        // Keep the last (up to 511) bytes of main data for the next frame.
+        // They may start in the old reservoir, which is moved down first.
+        let from_head = bytes_have.saturating_sub(save_pos).min(save_len);
+        let head_start = reserv_from + save_pos.min(bytes_have);
+        self.reserv_buf
+            .copy_within(head_start..head_start + from_head, 0);
+        let tail_start = (save_pos + from_head).saturating_sub(bytes_have);
+        let from_tail = save_len - from_head;
+        self.reserv_buf[from_head..save_len]
+            .copy_from_slice(&frame_main[tail_start..tail_start + from_tail]);
+        self.reserv = save_len as i32;
+
         let samples = if success {
-            Header(self.header).frame_samples() as usize
+            hdr.frame_samples() as usize
         } else {
             0
         };
         (samples, info)
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn decode_granule(
-        &mut self,
-        bs: &mut BitReader,
-        gr_info: &[GrInfo],
-        nch: usize,
-        grbuf: &mut [f32; 1152],
-        scf: &mut [f32; 40],
-        ist_pos: &mut [[u8; 39]; 2],
-        syn: &mut [f32],
-    ) {
-        let hdr = Header(self.header);
-        for ch in 0..nch {
-            let layer3gr_limit = bs.pos + gr_info[ch].part_23_length as i32;
-            layer3::decode_scalefactors(hdr, &mut ist_pos[ch], bs, &gr_info[ch], scf, ch);
-            layer3::huffman(
-                &mut grbuf[576 * ch..],
-                bs,
-                &gr_info[ch],
-                scf,
-                layer3gr_limit,
+#[allow(clippy::too_many_arguments)]
+fn decode_granule(
+    hdr: Header,
+    bs: &mut BitReader,
+    gr_info: &[GrInfo],
+    nch: usize,
+    grbuf: &mut [f32; 1152],
+    scf: &mut [f32; 40],
+    ist_pos: &mut [[u8; 39]; 2],
+    syn: &mut [f32],
+    mdct_overlap: &mut [[f32; 288]; 2],
+) {
+    for ch in 0..nch {
+        let layer3gr_limit = bs.pos + gr_info[ch].part_23_length as i32;
+        layer3::decode_scalefactors(hdr, &mut ist_pos[ch], bs, &gr_info[ch], scf, ch);
+        layer3::huffman(
+            &mut grbuf[576 * ch..],
+            bs,
+            &gr_info[ch],
+            scf,
+            layer3gr_limit,
+        );
+    }
+
+    if hdr.test_i_stereo() {
+        layer3::intensity_stereo(grbuf, &mut ist_pos[1], gr_info, hdr);
+    } else if hdr.is_ms_stereo() {
+        layer3::midside_stereo(grbuf, 0, 576);
+    }
+
+    for ch in 0..nch {
+        let gr = &gr_info[ch];
+        let g = &mut grbuf[576 * ch..576 * ch + 576];
+        let mut aa_bands = 31;
+        let n_long_bands =
+            (if gr.mixed_block_flag != 0 { 2 } else { 0 }) << (hdr.my_sample_rate() == 2) as u32;
+
+        if gr.n_short_sfb != 0 {
+            aa_bands = n_long_bands as i32 - 1;
+            layer3::reorder(
+                &mut g[n_long_bands * 18..],
+                syn,
+                &gr.sfbtab[gr.n_long_sfb as usize..],
             );
         }
 
-        if hdr.test_i_stereo() {
-            layer3::intensity_stereo(grbuf, &mut ist_pos[1], gr_info, hdr);
-        } else if hdr.is_ms_stereo() {
-            layer3::midside_stereo(grbuf, 0, 576);
-        }
-
-        for ch in 0..nch {
-            let gr = &gr_info[ch];
-            let g = &mut grbuf[576 * ch..576 * ch + 576];
-            let mut aa_bands = 31;
-            let n_long_bands = (if gr.mixed_block_flag != 0 { 2 } else { 0 })
-                << (hdr.my_sample_rate() == 2) as u32;
-
-            if gr.n_short_sfb != 0 {
-                aa_bands = n_long_bands as i32 - 1;
-                layer3::reorder(
-                    &mut g[n_long_bands * 18..],
-                    syn,
-                    &gr.sfbtab[gr.n_long_sfb as usize..],
-                );
-            }
-
-            layer3::antialias(g, aa_bands);
-            layer3::imdct_gr(g, &mut self.mdct_overlap[ch], gr.block_type, n_long_bands);
-            layer3::change_sign(g);
-        }
+        layer3::antialias(g, aa_bands);
+        layer3::imdct_gr(g, &mut mdct_overlap[ch], gr.block_type, n_long_bands);
+        layer3::change_sign(g);
     }
+}
 
-    fn save_reservoir(&mut self, bs: &BitReader) {
-        let mut pos = ((bs.pos + 7) as u32 / 8) as i32;
-        let mut remains = (bs.limit as u32 / 8) as i32 - pos;
-        if remains > MAX_BITRESERVOIR_BYTES as i32 {
-            pos += remains - MAX_BITRESERVOIR_BYTES as i32;
-            remains = MAX_BITRESERVOIR_BYTES as i32;
-        }
-        if remains > 0 {
-            let (pos, n) = (pos as usize, remains as usize);
-            self.reserv_buf[..n].copy_from_slice(&bs.buf[pos..pos + n]);
-        }
-        self.reserv = remains;
+/// Which main data bytes to keep as the next frame's bit reservoir: (start, len).
+fn reservoir_to_save(bs: &BitReader) -> (usize, usize) {
+    let mut pos = ((bs.pos + 7) as u32 / 8) as i32;
+    let mut remains = (bs.limit as u32 / 8) as i32 - pos;
+    if remains > MAX_BITRESERVOIR_BYTES as i32 {
+        pos += remains - MAX_BITRESERVOIR_BYTES as i32;
+        remains = MAX_BITRESERVOIR_BYTES as i32;
     }
-
-    /// Assembles the frame's main data (reservoir bytes + this frame's
-    /// payload) into `maindata`. Returns whether the reservoir had enough
-    /// data, and the main data length.
-    fn restore_reservoir(
-        &self,
-        bs: &BitReader,
-        maindata: &mut [u8],
-        main_data_begin: i32,
-    ) -> (bool, i32) {
-        let frame_bytes = ((bs.limit - bs.pos) / 8) as usize;
-        let bytes_have = self.reserv.min(main_data_begin) as usize;
-        let from = (self.reserv - main_data_begin).max(0) as usize;
-        maindata[..bytes_have].copy_from_slice(&self.reserv_buf[from..from + bytes_have]);
-        let start = (bs.pos / 8) as usize;
-        maindata[bytes_have..bytes_have + frame_bytes]
-            .copy_from_slice(&bs.buf[start..start + frame_bytes]);
-        (
-            self.reserv >= main_data_begin,
-            (bytes_have + frame_bytes) as i32,
-        )
-    }
+    (pos.max(0) as usize, remains.max(0) as usize)
 }

@@ -342,7 +342,9 @@ fn compliance(files: &[PathBuf]) -> u64 {
         };
         let data = std::fs::read(f).unwrap();
         let reference: Vec<i16> = ref_bytes
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
         let (c_out, _) = run::decode_all::<i16, RefI16>(&data);
