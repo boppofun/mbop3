@@ -10,9 +10,11 @@ if [ ! -f "$hist" ]; then
   printf "date\tchange\tdescription\tcheck\tdecoder_bytes\thost_stack\thost_stack_c\thost_time_ratio_vs_c\txtensa_O3\txtensa_Os\tc_xtensa_Os\tunsafe\n" > "$hist"
 fi
 
-change=$(jj log -r @ --no-graph -T 'change_id.short(8)' 2>/dev/null || echo "?")
-desc=$(jj log -r @ --no-graph -T 'description.first_line()' 2>/dev/null || echo "")
-[ -z "$desc" ] && desc=$(jj log -r @- --no-graph -T 'description.first_line()' 2>/dev/null || echo "")
+# Attribute to the working copy change, or its parent if the working copy is empty.
+rev=@
+[ "$(jj log -r @ --no-graph -T 'empty' 2>/dev/null)" = "true" ] && rev=@-
+change=$(jj log -r $rev --no-graph -T 'change_id.short(8)' 2>/dev/null || echo "?")
+desc=$(jj log -r $rev --no-graph -T 'description.first_line()' 2>/dev/null || echo "")
 
 check=FAIL
 just check > /tmp/mbop3_check.$$ 2>&1 && check=PASS
@@ -25,7 +27,7 @@ sizes=$(scripts/code_size.sh)
 o3=$(echo "$sizes" | awk '/mbop3_O3/ {print $2}')
 os=$(echo "$sizes" | awk '/mbop3_Os/ {print $2}')
 cos=$(echo "$sizes" | awk '/minimp3_Os/ {print $2}')
-unsafe=$(grep -rn "unsafe" mbop3/src | grep -v "forbid(unsafe_code)" | wc -l)
+unsafe=$( (grep -rn "unsafe" mbop3/src || true) | (grep -v "forbid(unsafe_code)" || true) | wc -l)
 
 row=$(printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" "$(date -Iseconds)" "$change" "$desc" "$check" "$dec" "$stack" "$stack_c" "$ratio" "$o3" "$os" "$cos" "$unsafe")
 echo "$row" >> "$hist"

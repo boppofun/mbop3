@@ -529,26 +529,41 @@ pub(crate) fn intensity_stereo(g: &mut [f32], ist_pos: &mut [u8; 39], gr: &[GrIn
     );
 }
 
-/// Reorders short block values from (window, frequency) to (frequency, window) order.
-pub(crate) fn reorder(g: &mut [f32], scratch: &mut [f32], sfb: &[u8]) {
-    let mut src = 0;
-    let mut dst = 0;
+/// Reorders short block values from (window, frequency) to (frequency,
+/// window) order, in place: each band of 3 windows x `len` values is
+/// transposed by following the permutation's cycles.
+pub(crate) fn reorder(g: &mut [f32], sfb: &[u8]) {
+    let mut base = 0;
     let mut i = 0;
     loop {
         let len = sfb[i] as usize;
         if len == 0 {
             break;
         }
-        for k in 0..len {
-            scratch[dst] = g[src + k];
-            scratch[dst + 1] = g[src + k + len];
-            scratch[dst + 2] = g[src + k + 2 * len];
-            dst += 3;
+        let band = &mut g[base..base + 3 * len];
+        // Short bands are at most 3 * 66 values.
+        let mut visited = [0u32; 7];
+        for start in 0..band.len() {
+            if visited[start / 32] & (1 << (start % 32)) != 0 {
+                continue;
+            }
+            let first = band[start];
+            let mut k = start;
+            loop {
+                visited[k / 32] |= 1 << (k % 32);
+                // The value that belongs at k = 3 * f + w is at w * len + f.
+                let src = (k % 3) * len + k / 3;
+                if src == start {
+                    band[k] = first;
+                    break;
+                }
+                band[k] = band[src];
+                k = src;
+            }
         }
-        src += 3 * len;
+        base += 3 * len;
         i += 3;
     }
-    g[..dst].copy_from_slice(&scratch[..dst]);
 }
 
 pub(crate) fn antialias(g: &mut [f32], nbands: i32) {

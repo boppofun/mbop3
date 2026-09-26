@@ -68,85 +68,115 @@ fn dct_ii(g: &mut [f32], n: usize) {
     }
 }
 
-fn synth_pair<S: Sample>(pcm: &mut [S], p: usize, nch: usize, z: &[f32], mut zo: usize) {
+/// Rows of 64 floats in the synthesis history ring buffer.
+///
+/// minimp3 keeps 15 rows of history and appends a granule's 18 new rows in a
+/// 33 row scratch buffer, then copies the last 15 back. A ring of exactly 18
+/// rows holds the same values without the copies: every access to row `r`
+/// (numbered from the start of the granule, 0..33) goes to row `r % 18`,
+/// which is the same physical row in every granule. At most 17 rows are live
+/// at a time.
+///
+/// In mono minimp3 only carries the left (even) columns over to the next
+/// granule, so the right channel's history is kept from the last stereo
+/// granule (which matters if a stream switches to stereo). Not writing the
+/// right columns in mono reproduces that exactly.
+pub(crate) const HIST_ROWS: usize = 18;
+pub(crate) const HIST_LEN: usize = HIST_ROWS * 64;
+
+/// `rows[m]` is the offset in the history of row m (relative to the current
+/// band pair). Column `c` of the 16th group of 4 columns.
+#[inline(always)]
+fn synth_pair<S: Sample>(
+    pcm: &mut [S],
+    p: usize,
+    nch: usize,
+    h: &[f32; HIST_LEN],
+    rows: &[usize],
+    c: usize,
+) {
+    let z = |m: usize, c: usize| h[rows[m] + 60 + c];
     let mut a;
-    a = (z[zo + 14 * 64] - z[zo]) * 29.0;
-    a += (z[zo + 64] + z[zo + 13 * 64]) * 213.0;
-    a += (z[zo + 12 * 64] - z[zo + 2 * 64]) * 459.0;
-    a += (z[zo + 3 * 64] + z[zo + 11 * 64]) * 2037.0;
-    a += (z[zo + 10 * 64] - z[zo + 4 * 64]) * 5153.0;
-    a += (z[zo + 5 * 64] + z[zo + 9 * 64]) * 6574.0;
-    a += (z[zo + 8 * 64] - z[zo + 6 * 64]) * 37489.0;
-    a += z[zo + 7 * 64] * 75038.0;
+    a = (z(14, c) - z(0, c)) * 29.0;
+    a += (z(1, c) + z(13, c)) * 213.0;
+    a += (z(12, c) - z(2, c)) * 459.0;
+    a += (z(3, c) + z(11, c)) * 2037.0;
+    a += (z(10, c) - z(4, c)) * 5153.0;
+    a += (z(5, c) + z(9, c)) * 6574.0;
+    a += (z(8, c) - z(6, c)) * 37489.0;
+    a += z(7, c) * 75038.0;
     pcm[p] = S::from_synth(a);
 
-    zo += 2;
-    a = z[zo + 14 * 64] * 104.0;
-    a += z[zo + 12 * 64] * 1567.0;
-    a += z[zo + 10 * 64] * 9727.0;
-    a += z[zo + 8 * 64] * 64019.0;
-    a += z[zo + 6 * 64] * -9975.0;
-    a += z[zo + 4 * 64] * -45.0;
-    a += z[zo + 2 * 64] * 146.0;
-    a += z[zo] * -5.0;
+    let c = c + 2;
+    a = z(14, c) * 104.0;
+    a += z(12, c) * 1567.0;
+    a += z(10, c) * 9727.0;
+    a += z(8, c) * 64019.0;
+    a += z(6, c) * -9975.0;
+    a += z(4, c) * -45.0;
+    a += z(2, c) * 146.0;
+    a += z(0, c) * -5.0;
     pcm[p + 16 * nch] = S::from_synth(a);
 }
 
 /// Synthesizes 2 x 32 output samples per channel from subband sample rows
-/// `xl` and `xl + 1` of `g`, writing them to `pcm[dl..]`. `lins` holds the
-/// filterbank history, with this call's window starting at `lb`.
-#[allow(clippy::too_many_arguments)]
-fn synth<S: Sample>(
+/// `xl` and `xl + 1` of `g`, writing them to `pcm[dl..]`. `row` is the
+/// history row of this band pair (`xl`, the band pair's first band).
+#[inline(always)]
+fn synth<S: Sample, const NCH: usize>(
     g: &[f32],
     xl: usize,
     pcm: &mut [S],
     dl: usize,
-    nch: usize,
-    lins: &mut [f32],
-    lb: usize,
+    h: &mut [f32; HIST_LEN],
 ) {
-    let xr = xl + 576 * (nch - 1);
-    let dr = dl + (nch - 1);
-    let zlin = lb + 15 * 64;
+    let stereo = NCH == 2;
+    let xr = xl + 576 * (NCH - 1);
+    let dr = dl + (NCH - 1);
+    let rows: [usize; 17] = core::array::from_fn(|j| ((xl + j) % HIST_ROWS) * 64);
+    let (r14, r15, r16) = (rows[14], rows[15], rows[16]);
 
-    lins[zlin + 4 * 15] = g[xl + 18 * 16];
-    lins[zlin + 4 * 15 + 1] = g[xr + 18 * 16];
-    lins[zlin + 4 * 15 + 2] = g[xl];
-    lins[zlin + 4 * 15 + 3] = g[xr];
-
-    lins[zlin + 4 * 31] = g[xl + 1 + 18 * 16];
-    lins[zlin + 4 * 31 + 1] = g[xr + 1 + 18 * 16];
-    lins[zlin + 4 * 31 + 2] = g[xl + 1];
-    lins[zlin + 4 * 31 + 3] = g[xr + 1];
-
-    synth_pair(pcm, dr, nch, lins, lb + 4 * 15 + 1);
-    synth_pair(pcm, dr + 32 * nch, nch, lins, lb + 4 * 15 + 64 + 1);
-    synth_pair(pcm, dl, nch, lins, lb + 4 * 15);
-    synth_pair(pcm, dl + 32 * nch, nch, lins, lb + 4 * 15 + 64);
+    h[r15 + 60] = g[xl + 18 * 16];
+    h[r15 + 62] = g[xl];
+    h[r16 + 60] = g[xl + 1 + 18 * 16];
+    h[r16 + 62] = g[xl + 1];
+    if stereo {
+        h[r15 + 61] = g[xr + 18 * 16];
+        h[r15 + 63] = g[xr];
+        h[r16 + 61] = g[xr + 1 + 18 * 16];
+        h[r16 + 63] = g[xr + 1];
+        synth_pair(pcm, dr, NCH, h, &rows, 1);
+        synth_pair(pcm, dr + 32 * NCH, NCH, h, &rows[1..], 1);
+    }
+    synth_pair(pcm, dl, NCH, h, &rows, 0);
+    synth_pair(pcm, dl + 32 * NCH, NCH, h, &rows[1..], 0);
 
     let mut w = 0;
     for i in (0..15).rev() {
+        let q = 4 * i;
+        h[r15 + q] = g[xl + 18 * (31 - i)];
+        h[r15 + q + 2] = g[xl + 1 + 18 * (31 - i)];
+        h[r16 + q] = g[xl + 1 + 18 * (1 + i)];
+        h[r14 + q + 2] = g[xl + 18 * (1 + i)];
+        if stereo {
+            h[r15 + q + 1] = g[xr + 18 * (31 - i)];
+            h[r15 + q + 3] = g[xr + 1 + 18 * (31 - i)];
+            h[r16 + q + 1] = g[xr + 1 + 18 * (1 + i)];
+            h[r14 + q + 3] = g[xr + 18 * (1 + i)];
+        }
+
+        // Columns: 0 = left even band, 1 = right even, 2 = left odd, 3 = right odd.
         let mut a = [0f32; 4];
         let mut b = [0f32; 4];
-
-        lins[zlin + 4 * i] = g[xl + 18 * (31 - i)];
-        lins[zlin + 4 * i + 1] = g[xr + 18 * (31 - i)];
-        lins[zlin + 4 * i + 2] = g[xl + 1 + 18 * (31 - i)];
-        lins[zlin + 4 * i + 3] = g[xr + 1 + 18 * (31 - i)];
-        lins[zlin + 4 * (i + 16)] = g[xl + 1 + 18 * (1 + i)];
-        lins[zlin + 4 * (i + 16) + 1] = g[xr + 1 + 18 * (1 + i)];
-        lins[zlin + 4 * i - 64 + 2] = g[xl + 18 * (1 + i)];
-        lins[zlin + 4 * i - 64 + 3] = g[xr + 18 * (1 + i)];
-
-        // k = 0..8 with minimp3's S0 (first), then alternating S2 (odd k) and S1 (even k).
+        // minimp3's S0 (k = 0), then S2 (odd k) and S1 (even k).
         for k in 0..8 {
             let w0 = G_WIN[w];
             let w1 = G_WIN[w + 1];
             w += 2;
-            let vz = zlin + 4 * i - k * 64;
-            let vy = zlin + 4 * i - (15 - k) * 64;
-            for j in 0..4 {
-                let (z, y) = (lins[vz + j], lins[vy + j]);
+            let vz = rows[15 - k] + q;
+            let vy = rows[k] + q;
+            for j in (0..4).step_by(if stereo { 1 } else { 2 }) {
+                let (z, y) = (h[vz + j], h[vy + j]);
                 if k == 0 {
                     b[j] = z * w1 + y * w0;
                     a[j] = z * w0 - y * w1;
@@ -160,41 +190,37 @@ fn synth<S: Sample>(
             }
         }
 
-        pcm[dr + (15 - i) * nch] = S::from_synth(a[1]);
-        pcm[dr + (17 + i) * nch] = S::from_synth(b[1]);
-        pcm[dl + (15 - i) * nch] = S::from_synth(a[0]);
-        pcm[dl + (17 + i) * nch] = S::from_synth(b[0]);
-        pcm[dr + (47 - i) * nch] = S::from_synth(a[3]);
-        pcm[dr + (49 + i) * nch] = S::from_synth(b[3]);
-        pcm[dl + (47 - i) * nch] = S::from_synth(a[2]);
-        pcm[dl + (49 + i) * nch] = S::from_synth(b[2]);
+        if stereo {
+            pcm[dr + (15 - i) * NCH] = S::from_synth(a[1]);
+            pcm[dr + (17 + i) * NCH] = S::from_synth(b[1]);
+        }
+        pcm[dl + (15 - i) * NCH] = S::from_synth(a[0]);
+        pcm[dl + (17 + i) * NCH] = S::from_synth(b[0]);
+        if stereo {
+            pcm[dr + (47 - i) * NCH] = S::from_synth(a[3]);
+            pcm[dr + (49 + i) * NCH] = S::from_synth(b[3]);
+        }
+        pcm[dl + (47 - i) * NCH] = S::from_synth(a[2]);
+        pcm[dl + (49 + i) * NCH] = S::from_synth(b[2]);
     }
 }
 
-/// Synthesizes one granule (`nbands` * 32 samples per channel) from `g`
-/// (576 subband samples per channel) into `pcm`.
+/// Synthesizes one granule (576 samples per channel) from `g` (576 subband
+/// samples per channel) into `pcm`.
 pub(crate) fn synth_granule<S: Sample>(
-    qmf_state: &mut [f32; 960],
+    h: &mut [f32; HIST_LEN],
     g: &mut [f32],
-    nbands: usize,
     nch: usize,
     pcm: &mut [S],
-    lins: &mut [f32],
 ) {
     for i in 0..nch {
-        dct_ii(&mut g[576 * i..], nbands);
+        dct_ii(&mut g[576 * i..], 18);
     }
-
-    lins[..15 * 64].copy_from_slice(qmf_state);
-
-    for i in (0..nbands).step_by(2) {
-        synth(g, i, pcm, 32 * nch * i, nch, lins, i * 64);
-    }
-    if nch == 1 {
-        for i in (0..15 * 64).step_by(2) {
-            qmf_state[i] = lins[nbands * 64 + i];
+    for i in (0..18).step_by(2) {
+        if nch == 1 {
+            synth::<S, 1>(g, i, pcm, 32 * i, h);
+        } else {
+            synth::<S, 2>(g, i, pcm, 64 * i, h);
         }
-    } else {
-        qmf_state.copy_from_slice(&lins[nbands * 64..nbands * 64 + 15 * 64]);
     }
 }

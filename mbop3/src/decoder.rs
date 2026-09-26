@@ -3,7 +3,7 @@
 use crate::bits::BitReader;
 use crate::header::{HDR_SIZE, Header, find_frame};
 use crate::layer3::{self, GrInfo};
-use crate::synth::synth_granule;
+use crate::synth::{HIST_LEN, synth_granule};
 use crate::{FrameInfo, MAX_SAMPLES_PER_FRAME, Sample};
 
 const MAX_BITRESERVOIR_BYTES: usize = 511;
@@ -15,7 +15,7 @@ const MAX_BITRESERVOIR_BYTES: usize = 511;
 #[derive(Clone)]
 pub struct Decoder {
     mdct_overlap: [[f32; 288]; 2],
-    qmf_state: [f32; 960],
+    synth_hist: [f32; HIST_LEN],
     reserv: i32,
     free_format_bytes: i32,
     header: [u8; 4],
@@ -29,7 +29,6 @@ struct Work {
     gr_info: [GrInfo; 4],
     grbuf: [f32; 576 * 2],
     scf: [f32; 40],
-    syn: [f32; (18 + 15) * 64],
     ist_pos: [[u8; 39]; 2],
 }
 
@@ -43,7 +42,7 @@ impl Decoder {
     pub const fn new() -> Self {
         Decoder {
             mdct_overlap: [[0.0; 288]; 2],
-            qmf_state: [0.0; 960],
+            synth_hist: [0.0; HIST_LEN],
             reserv: 0,
             free_format_bytes: 0,
             header: [0; 4],
@@ -52,7 +51,6 @@ impl Decoder {
                 gr_info: [GrInfo::ZERO; 4],
                 grbuf: [0.0; 576 * 2],
                 scf: [0.0; 40],
-                syn: [0.0; (18 + 15) * 64],
                 ist_pos: [[0; 39]; 2],
             },
         }
@@ -61,7 +59,7 @@ impl Decoder {
     /// Resets the stream state, as when starting a new stream.
     fn reset(&mut self) {
         self.mdct_overlap = [[0.0; 288]; 2];
-        self.qmf_state = [0.0; 960];
+        self.synth_hist = [0.0; HIST_LEN];
         self.reserv = 0;
         self.free_format_bytes = 0;
         self.header = [0; 4];
@@ -167,16 +165,13 @@ impl Decoder {
                         &mut w.grbuf,
                         &mut w.scf,
                         &mut w.ist_pos,
-                        &mut w.syn,
                         &mut self.mdct_overlap,
                     );
                     synth_granule(
-                        &mut self.qmf_state,
+                        &mut self.synth_hist,
                         &mut w.grbuf,
-                        18,
                         nch,
                         &mut pcm[igr * 576 * nch..],
-                        &mut w.syn,
                     );
                 }
             }
@@ -213,7 +208,6 @@ fn decode_granule(
     grbuf: &mut [f32; 1152],
     scf: &mut [f32; 40],
     ist_pos: &mut [[u8; 39]; 2],
-    syn: &mut [f32],
     mdct_overlap: &mut [[f32; 288]; 2],
 ) {
     for ch in 0..nch {
@@ -245,7 +239,6 @@ fn decode_granule(
             aa_bands = n_long_bands as i32 - 1;
             layer3::reorder(
                 &mut g[n_long_bands * 18..],
-                syn,
                 &gr.sfbtab[gr.n_long_sfb as usize..],
             );
         }
