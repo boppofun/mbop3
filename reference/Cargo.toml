@@ -1,0 +1,10 @@
+[package]
+name = "mbop3-reference"
+version = "0.0.0"
+edition.workspace = true
+license = "CC0-1.0"
+publish = false
+description = "The original C minimp3 (pinned commit), built with the same configuration as mbop3, for regression testing."
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,1 @@
+[{"directory": "/home/ben/Projects/boppo/mbop3/c2rust", "command": "clang -c -O2 -std=c99 minimp3.c -o minimp3.o", "file": "minimp3.c"}]

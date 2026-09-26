@@ -1,0 +1,24 @@
+# Built separately (for Xtensa) by scripts/code_size.sh to measure the decoder's code size.
+[package]
+name = "mbop3-sizecheck"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+mbop3 = { path = "../mbop3" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release-s]
+inherits = "release"
+opt-level = "s"

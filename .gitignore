@@ -1,0 +1,6 @@
+/target
+/corpus/external
+/corpus/generated
+/corpus/mutated
+/results
+/sizecheck/target

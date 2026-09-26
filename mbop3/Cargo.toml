@@ -1,0 +1,10 @@
+[package]
+name = "mbop3"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "A small, no_std MP3 (MPEG-1/2/2.5 Layer III) decoder derived from minimp3, tuned for microcontrollers."
+categories = ["multimedia::audio", "no-std", "embedded"]
+keywords = ["mp3", "decoder", "audio", "no_std", "embedded"]
+
+[dependencies]

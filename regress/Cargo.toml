@@ -1,0 +1,10 @@
+[package]
+name = "mbop3-regress"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+mbop3 = { path = "../mbop3" }
+mbop3-reference = { path = "../reference" }
