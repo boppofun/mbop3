@@ -39,7 +39,13 @@ impl<'a> Feeder<'a> {
             Driver::Slice => Vec::new(),
             Driver::Window(n) => Vec::with_capacity(n),
         };
-        Feeder { data, driver, pos: 0, window, offset: 0 }
+        Feeder {
+            data,
+            driver,
+            pos: 0,
+            window,
+            offset: 0,
+        }
     }
 
     /// Decodes the next frame. Returns None at the end of the input.
@@ -53,7 +59,8 @@ impl<'a> Feeder<'a> {
                 Driver::Slice => &self.data[self.pos..],
                 Driver::Window(cap) => {
                     let take = (cap - self.window.len()).min(self.data.len() - self.pos);
-                    self.window.extend_from_slice(&self.data[self.pos..self.pos + take]);
+                    self.window
+                        .extend_from_slice(&self.data[self.pos..self.pos + take]);
                     self.pos += take;
                     &self.window
                 }
@@ -112,7 +119,11 @@ pub struct Stats {
 
 impl Stats {
     pub fn rms(&self) -> f64 {
-        if self.samples == 0 { 0.0 } else { (self.sum_sq_diff / self.samples as f64).sqrt() }
+        if self.samples == 0 {
+            0.0
+        } else {
+            (self.sum_sq_diff / self.samples as f64).sqrt()
+        }
     }
 }
 
@@ -136,7 +147,12 @@ pub fn compare<S: Sample, A: Decoder<S>, B: Decoder<S>>(
     let mut pa = [S::default(); MAX_SAMPLES_PER_FRAME];
     let mut pb = [S::default(); MAX_SAMPLES_PER_FRAME];
     let mut stats = Stats::default();
-    let mismatch = |frame: u64, offset: usize, what: String| Mismatch { driver, frame, offset, what };
+    let mismatch = |frame: u64, offset: usize, what: String| Mismatch {
+        driver,
+        frame,
+        offset,
+        what,
+    };
     loop {
         let ra = fa.next(&mut a, &mut pa);
         let rb = fb.next(&mut b, &mut pb);
@@ -163,7 +179,10 @@ pub fn compare<S: Sample, A: Decoder<S>, B: Decoder<S>>(
                     B::name(),
                     rb
                 );
-                return (stats, Some(mismatch(stats.frames, fa.offset.max(fb.offset), what)));
+                return (
+                    stats,
+                    Some(mismatch(stats.frames, fa.offset.max(fb.offset), what)),
+                );
             }
         };
         for i in 0..n {
@@ -187,8 +206,8 @@ pub fn compare<S: Sample, A: Decoder<S>, B: Decoder<S>>(
         stats.samples += n as u64;
         stats.frames += 1;
     }
-    if let Criteria::Tolerance { max_abs, max_rms } = criteria {
-        if stats.max_abs_diff > max_abs || stats.rms() > max_rms {
+    if let Criteria::Tolerance { max_abs, max_rms } = criteria
+        && (stats.max_abs_diff > max_abs || stats.rms() > max_rms) {
             let what = format!(
                 "outside tolerance: max_abs {:.3e} (limit {max_abs:.3e}) rms {:.3e} (limit {max_rms:.3e})",
                 stats.max_abs_diff,
@@ -196,7 +215,6 @@ pub fn compare<S: Sample, A: Decoder<S>, B: Decoder<S>>(
             );
             return (stats, Some(mismatch(stats.frames, 0, what)));
         }
-    }
     (stats, None)
 }
 

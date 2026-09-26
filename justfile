@@ -67,4 +67,4 @@ clippy:
 
 # Count of `unsafe` in the decoder crate.
 unsafe-count:
-    @grep -rn "unsafe" mbop3/src | grep -v "^\s*//" | wc -l
+    @grep -rn "unsafe" mbop3/src | grep -v "forbid(unsafe_code)" | wc -l

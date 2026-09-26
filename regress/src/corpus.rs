@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 pub fn is_mp3(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
         Some("mp3" | "bit" | "mp2" | "mpa")
     )
 }
@@ -14,7 +17,9 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -67,7 +72,11 @@ impl Rng {
         self.0.wrapping_mul(0x2545F4914F6CDD1D)
     }
     pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
 }
 

@@ -1,8 +1,28 @@
-//! mbop3: an MP3 (MPEG-1/2/2.5 Layer III) decoder derived from
+//! mbop3: a small `no_std` MP3 (MPEG-1/2/2.5 Layer III) decoder, derived from
 //! [minimp3](https://github.com/lieff/minimp3).
+//!
+//! ```no_run
+//! let mp3: &[u8] = &[]; // at least several frames of input
+//! let mut decoder = mbop3::Decoder::new();
+//! let mut pcm = [0i16; mbop3::MAX_SAMPLES_PER_FRAME];
+//! let (samples, info) = decoder.decode_frame(mp3, Some(&mut pcm));
+//! // pcm[..samples * info.channels as usize] is interleaved audio.
+//! // Skip info.frame_bytes of input before the next call.
+//! ```
 #![no_std]
+#![forbid(unsafe_code)]
+// Constants are kept textually identical to minimp3's, and loops mirror its
+// indexing, which keeps the output bit-exact and the code easy to compare.
+#![allow(clippy::excessive_precision, clippy::approx_constant, clippy::needless_range_loop)]
 
-mod minimp3;
+mod bits;
+mod decoder;
+mod header;
+mod layer3;
+mod synth;
+mod tables;
+
+pub use decoder::Decoder;
 
 /// Maximum samples (all channels) a single frame can produce.
 pub const MAX_SAMPLES_PER_FRAME: usize = 1152 * 2;
@@ -21,52 +41,35 @@ pub struct FrameInfo {
     pub bitrate_kbps: i32,
 }
 
-/// MP3 decoder state.
-pub struct Decoder(minimp3::mp3dec_t);
+/// An output sample type: `i16`, or `f32` in the range -1.0..1.0.
+pub trait Sample: Copy + Default + private::Sealed {
+    #[doc(hidden)]
+    fn from_synth(sample: f32) -> Self;
+}
 
-impl Decoder {
-    pub fn new() -> Self {
-        // SAFETY: mp3dec_t is plain old data, all zeros is valid.
-        let mut dec = Decoder(unsafe { core::mem::zeroed() });
-        unsafe { minimp3::mp3dec_init(&mut dec.0) };
-        dec
-    }
-
-    /// Finds and decodes the next frame in `mp3`, returning the number of
-    /// samples per channel written to `pcm` and info about the frame.
-    ///
-    /// With `pcm` None the frame is parsed but not decoded.
-    pub fn decode_frame(
-        &mut self,
-        mp3: &[u8],
-        pcm: Option<&mut [i16; MAX_SAMPLES_PER_FRAME]>,
-    ) -> (usize, FrameInfo) {
-        let mut info = minimp3::mp3dec_frame_info_t {
-            frame_bytes: 0,
-            frame_offset: 0,
-            channels: 0,
-            hz: 0,
-            layer: 0,
-            bitrate_kbps: 0,
-        };
-        let pcm = pcm.map_or(core::ptr::null_mut(), |p| p.as_mut_ptr());
-        let len = i32::try_from(mp3.len()).unwrap_or(i32::MAX);
-        let samples =
-            unsafe { minimp3::mp3dec_decode_frame(&mut self.0, mp3.as_ptr(), len, pcm, &mut info) };
-        let info = FrameInfo {
-            frame_bytes: info.frame_bytes,
-            frame_offset: info.frame_offset,
-            channels: info.channels,
-            hz: info.hz,
-            layer: info.layer,
-            bitrate_kbps: info.bitrate_kbps,
-        };
-        (samples as usize, info)
+impl Sample for i16 {
+    #[inline]
+    fn from_synth(sample: f32) -> i16 {
+        if sample >= 32766.5 {
+            return 32767;
+        }
+        if sample <= -32767.5 {
+            return -32768;
+        }
+        let s = (sample + 0.5) as i16;
+        s - (s < 0) as i16 // away from zero, to be compliant
     }
 }
 
-impl Default for Decoder {
-    fn default() -> Self {
-        Self::new()
+impl Sample for f32 {
+    #[inline]
+    fn from_synth(sample: f32) -> f32 {
+        sample * (1.0 / 32768.0)
     }
+}
+
+mod private {
+    pub trait Sealed {}
+    impl Sealed for i16 {}
+    impl Sealed for f32 {}
 }

@@ -25,7 +25,7 @@ sizes=$(scripts/code_size.sh)
 o3=$(echo "$sizes" | awk '/mbop3_O3/ {print $2}')
 os=$(echo "$sizes" | awk '/mbop3_Os/ {print $2}')
 cos=$(echo "$sizes" | awk '/minimp3_Os/ {print $2}')
-unsafe=$(grep -rn "unsafe" mbop3/src | grep -v "^\S*:\s*//" | wc -l)
+unsafe=$(grep -rn "unsafe" mbop3/src | grep -v "forbid(unsafe_code)" | wc -l)
 
 row=$(printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" "$(date -Iseconds)" "$change" "$desc" "$check" "$dec" "$stack" "$stack_c" "$ratio" "$o3" "$os" "$cos" "$unsafe")
 echo "$row" >> "$hist"

@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use decoders::{Decoder, Mbop3, RefI16};
+use decoders::{Decoder, Mbop3, RefF32, RefI16, Sample};
 use run::{Criteria, Driver, Mismatch, Stats};
 
 const USAGE: &str = "\
@@ -70,7 +70,11 @@ fn parse_opts(args: &[String]) -> Opts {
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().unwrap_or_else(|| panic!("{a} needs a value")).clone();
+        let mut val = || {
+            it.next()
+                .unwrap_or_else(|| panic!("{a} needs a value"))
+                .clone()
+        };
         match a.as_str() {
             "--criteria" => {
                 o.criteria = match val().as_str() {
@@ -138,8 +142,12 @@ struct Failure {
     mismatch: Mismatch,
 }
 
-fn compare_catching(data: &[u8], driver: Driver, criteria: Criteria) -> (Stats, Option<Mismatch>) {
-    let r = std::panic::catch_unwind(|| run::compare::<i16, Mbop3, RefI16>(data, driver, criteria));
+fn compare_catching<S: Sample, A: Decoder<S>, B: Decoder<S>>(
+    data: &[u8],
+    driver: Driver,
+    criteria: Criteria,
+) -> (Stats, Option<Mismatch>) {
+    let r = std::panic::catch_unwind(|| run::compare::<S, A, B>(data, driver, criteria));
     r.unwrap_or_else(|e| {
         let msg = e
             .downcast_ref::<String>()
@@ -148,7 +156,12 @@ fn compare_catching(data: &[u8], driver: Driver, criteria: Criteria) -> (Stats, 
             .unwrap_or_default();
         (
             Stats::default(),
-            Some(Mismatch { driver, frame: 0, offset: 0, what: format!("panic: {msg}") }),
+            Some(Mismatch {
+                driver,
+                frame: 0,
+                offset: 0,
+                what: format!("{}: panic: {msg}", A::name()),
+            }),
         )
     })
 }
@@ -175,7 +188,11 @@ fn check(args: &[String]) -> i32 {
     let mut jobs = Vec::new();
     for (tier, files) in &tiers {
         for f in files {
-            jobs.push(Job { tier: tier.clone(), path: f.clone(), kind: JobKind::File });
+            jobs.push(Job {
+                tier: tier.clone(),
+                path: f.clone(),
+                kind: JobKind::File,
+            });
         }
     }
     if o.mutations > 0 {
@@ -218,9 +235,17 @@ fn check(args: &[String]) -> i32 {
                             (format!("{} [{m}, seed {seed:#x}]", job.path.display()), d)
                         }
                     };
-                    let mut local = TierTotals { files: 1, ..Default::default() };
-                    for driver in drivers {
-                        let (stats, mismatch) = compare_catching(&data, driver, o.criteria);
+                    let mut local = TierTotals {
+                        files: 1,
+                        ..Default::default()
+                    };
+                    let runs = drivers.iter().flat_map(|&d| [(d, false), (d, true)]);
+                    for (driver, float) in runs {
+                        let (stats, mismatch) = if float {
+                            compare_catching::<f32, Mbop3, RefF32>(&data, driver, o.criteria)
+                        } else {
+                            compare_catching::<i16, Mbop3, RefI16>(&data, driver, o.criteria)
+                        };
                         local.frames += stats.frames;
                         local.samples += stats.samples;
                         local.differing += stats.differing_samples;
@@ -251,7 +276,10 @@ fn check(args: &[String]) -> i32 {
         Criteria::Exact => "bit-exact",
         Criteria::Tolerance { .. } => "ISO full-accuracy tolerance",
     };
-    println!("mbop3 vs minimp3 ({criteria}), drivers: slice + window{}", o.window);
+    println!(
+        "mbop3 vs minimp3 ({criteria}), i16 and f32 output, drivers: slice + window{}",
+        o.window
+    );
     println!(
         "{:<10} {:>7} {:>10} {:>13} {:>11} {:>10} {:>7}",
         "tier", "files", "frames", "samples", "diff samp", "max diff", "failed"
@@ -270,7 +298,12 @@ fn check(args: &[String]) -> i32 {
     for f in failures.iter().take(25) {
         println!(
             "FAIL [{}] {} ({}, frame {}, input offset {}): {}",
-            f.tier, f.label, f.mismatch.driver, f.mismatch.frame, f.mismatch.offset, f.mismatch.what
+            f.tier,
+            f.label,
+            f.mismatch.driver,
+            f.mismatch.frame,
+            f.mismatch.offset,
+            f.mismatch.what
         );
     }
     if failures.len() > 25 {
@@ -285,7 +318,9 @@ fn check(args: &[String]) -> i32 {
     }
     println!("check took {:.1}s", start.elapsed().as_secs_f64());
     if failed_files > 0 || compliance_failed > 0 {
-        println!("RESULT: FAIL ({failed_files} files differ, {compliance_failed} compliance failures)");
+        println!(
+            "RESULT: FAIL ({failed_files} files differ, {compliance_failed} compliance failures)"
+        );
         1
     } else {
         println!("RESULT: PASS");
@@ -302,10 +337,14 @@ fn compliance(files: &[PathBuf]) -> u64 {
     let mut skipped = 0;
     let mut known = 0;
     for f in files {
-        let Ok(ref_bytes) = std::fs::read(f.with_extension("pcm")) else { continue };
+        let Ok(ref_bytes) = std::fs::read(f.with_extension("pcm")) else {
+            continue;
+        };
         let data = std::fs::read(f).unwrap();
-        let reference: Vec<i16> =
-            ref_bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        let reference: Vec<i16> = ref_bytes
+            .as_chunks::<2>().0.iter()
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
         let (c_out, _) = run::decode_all::<i16, RefI16>(&data);
         if c_out.is_empty() {
             // Layer 1/2 vector: neither decoder handles it.
@@ -354,7 +393,11 @@ impl std::fmt::Display for Score {
 fn score(name: &str, reference: &[i16], got: &[i16]) -> Score {
     let nonstandard = name.contains("nonstandard") || name.contains("ILL");
     let (r, g) = (reference.len(), got.len());
-    let len_ok = if nonstandard { r == g } else { r == g || r + 1152 == g || r + 2304 == g };
+    let len_ok = if nonstandard {
+        r == g
+    } else {
+        r == g || r + 1152 == g || r + 2304 == g
+    };
     let mut sq = 0f64;
     let mut max_diff = 0;
     for i in 0..r.min(g) {
@@ -363,8 +406,18 @@ fn score(name: &str, reference: &[i16], got: &[i16]) -> Score {
         sq += (d * d) as f64;
     }
     let mse = sq / g.max(1) as f64;
-    let psnr = if mse == 0.0 { 99.0 } else { 10.0 * ((32767.0f64 * 32767.0) / mse).log10() };
-    Score { pass: len_ok && psnr >= 96.0, samples: g, ref_samples: r, max_diff, psnr }
+    let psnr = if mse == 0.0 {
+        99.0
+    } else {
+        10.0 * ((32767.0f64 * 32767.0) / mse).log10()
+    };
+    Score {
+        pass: len_ok && psnr >= 96.0,
+        samples: g,
+        ref_samples: r,
+        max_diff,
+        psnr,
+    }
 }
 
 fn bench(args: &[String]) -> i32 {
@@ -390,9 +443,22 @@ fn bench(args: &[String]) -> i32 {
         best_ours = best_ours.min(time::<Mbop3>(&datas));
         best_c = best_c.min(time::<RefI16>(&datas));
     }
-    println!("bench: {} files, {:.1}s of audio, best of {} runs", files.len(), audio_secs, o.reps);
-    println!("  mbop3   {:.4}s ({:.0}x realtime)", best_ours, audio_secs / best_ours);
-    println!("  minimp3 {:.4}s ({:.0}x realtime)", best_c, audio_secs / best_c);
+    println!(
+        "bench: {} files, {:.1}s of audio, best of {} runs",
+        files.len(),
+        audio_secs,
+        o.reps
+    );
+    println!(
+        "  mbop3   {:.4}s ({:.0}x realtime)",
+        best_ours,
+        audio_secs / best_ours
+    );
+    println!(
+        "  minimp3 {:.4}s ({:.0}x realtime)",
+        best_c,
+        audio_secs / best_c
+    );
     println!("  mbop3/minimp3 time ratio: {:.3}", best_ours / best_c);
     0
 }
@@ -428,8 +494,14 @@ fn stack_cmd(args: &[String]) -> i32 {
 }
 
 fn sizes() -> i32 {
-    println!("size_of::<mbop3::Decoder>() = {}", std::mem::size_of::<mbop3::Decoder>());
-    println!("minimp3 sizeof(mp3dec_t) = {}", mbop3_reference::i16::Decoder::decoder_size());
+    println!(
+        "size_of::<mbop3::Decoder>() = {}",
+        std::mem::size_of::<mbop3::Decoder>()
+    );
+    println!(
+        "minimp3 sizeof(mp3dec_t) = {}",
+        mbop3_reference::i16::Decoder::decoder_size()
+    );
     println!(
         "minimp3 sizeof(mp3dec_scratch_t) (on the stack in every decode) = {}",
         mbop3_reference::i16::Decoder::scratch_size()

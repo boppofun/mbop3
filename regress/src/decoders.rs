@@ -44,7 +44,8 @@ pub trait Decoder<S: Sample> {
     fn name() -> &'static str;
     fn new() -> Self;
     /// Returns samples per channel.
-    fn decode(&mut self, mp3: &[u8], pcm: Option<&mut [S; MAX_SAMPLES_PER_FRAME]>) -> (usize, Info);
+    fn decode(&mut self, mp3: &[u8], pcm: Option<&mut [S; MAX_SAMPLES_PER_FRAME]>)
+    -> (usize, Info);
 }
 
 pub struct Mbop3(Box<mbop3::Decoder>);
@@ -60,6 +61,33 @@ impl Decoder<i16> for Mbop3 {
         &mut self,
         mp3: &[u8],
         pcm: Option<&mut [i16; MAX_SAMPLES_PER_FRAME]>,
+    ) -> (usize, Info) {
+        let (samples, i) = self.0.decode_frame(mp3, pcm);
+        (
+            samples,
+            Info {
+                frame_bytes: i.frame_bytes,
+                frame_offset: i.frame_offset,
+                channels: i.channels,
+                hz: i.hz,
+                layer: i.layer,
+                bitrate_kbps: i.bitrate_kbps,
+            },
+        )
+    }
+}
+
+impl Decoder<f32> for Mbop3 {
+    fn name() -> &'static str {
+        "mbop3-f32"
+    }
+    fn new() -> Self {
+        Mbop3(Box::default())
+    }
+    fn decode(
+        &mut self,
+        mp3: &[u8],
+        pcm: Option<&mut [f32; MAX_SAMPLES_PER_FRAME]>,
     ) -> (usize, Info) {
         let (samples, i) = self.0.decode_frame(mp3, pcm);
         (

@@ -11,7 +11,7 @@ Priorities, in order: stack use, memory, CPU, code size.
 | Path | What |
 |---|---|
 | `mbop3/` | The decoder crate (`no_std`, no alloc). |
-| `c2rust/` | The unedited c2rust output, kept for reference. `mbop3/src/minimp3.rs` started as this. |
+| `c2rust/` | The unedited c2rust output of minimp3. The first commit used it directly; it was then replaced by the safe port in `mbop3/src`, and is kept for reference. |
 | `reference/` | The original C minimp3 at a pinned commit (`reference/minimp3/COMMIT`), built with the same configuration (Layer 3 only, no SIMD) in int16 and float variants. The golden reference. |
 | `regress/` | `mbop3-regress`, the regression harness (see below). |
 | `sizecheck/` | Xtensa staticlib used to measure code size. |
