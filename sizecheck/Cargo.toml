@@ -11,7 +11,7 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
-mbop3 = { path = "../mbop3", features = ["profile"] }
+mbop3 = { path = "../mbop3" }
 
 [profile.release]
 opt-level = 3

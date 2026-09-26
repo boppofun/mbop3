@@ -547,7 +547,13 @@ pub(crate) fn intensity_stereo(g: &mut [f32], ist_pos: &mut [u8; 39], gr: &[GrIn
 /// Reorders short block values from (window, frequency) to (frequency,
 /// window) order, in place: each band of 3 windows x `len` values is
 /// transposed by following the permutation's cycles.
-pub(crate) fn reorder(g: &mut [f32], sfb: &[u8]) {
+///
+/// For MPEG-2.5 8 kHz mixed blocks minimp3's region starts after more long
+/// band values than its table has, so the last band runs up to 24 values past
+/// the channel's 576: into what follows grbuf[ch] in minimp3's scratch struct
+/// (channel 1's grbuf, or the scalefactors after channel 1). `spill` is that
+/// memory, so the result is the same as minimp3's.
+pub(crate) fn reorder(g: &mut [f32], spill: &mut [f32], sfb: &[u8]) {
     let mut base = 0;
     let mut i = 0;
     loop {
@@ -555,29 +561,79 @@ pub(crate) fn reorder(g: &mut [f32], sfb: &[u8]) {
         if len == 0 {
             break;
         }
-        let band = &mut g[base..base + 3 * len];
-        // Short bands are at most 3 * 66 values.
-        let mut visited = [0u32; 7];
-        for start in 0..band.len() {
-            if visited[start / 32] & (1 << (start % 32)) != 0 {
-                continue;
-            }
-            let first = band[start];
-            let mut k = start;
-            loop {
-                visited[k / 32] |= 1 << (k % 32);
-                // The value that belongs at k = 3 * f + w is at w * len + f.
-                let src = (k % 3) * len + k / 3;
-                if src == start {
-                    band[k] = first;
-                    break;
-                }
-                band[k] = band[src];
-                k = src;
-            }
+        if base + 3 * len <= g.len() {
+            transpose_band(&mut g[base..base + 3 * len], len);
+        } else {
+            transpose_band_split(g, spill, base, len);
         }
         base += 3 * len;
         i += 3;
+    }
+}
+
+/// Transposes 3 x `len` values to `len` x 3.
+fn transpose_band(band: &mut [f32], len: usize) {
+    // Short bands are at most 3 * 66 values.
+    let mut visited = [0u32; 7];
+    for start in 0..band.len() {
+        if visited[start / 32] & (1 << (start % 32)) != 0 {
+            continue;
+        }
+        let first = band[start];
+        let mut k = start;
+        loop {
+            visited[k / 32] |= 1 << (k % 32);
+            // The value that belongs at k = 3 * f + w is at w * len + f.
+            let src = (k % 3) * len + k / 3;
+            if src == start {
+                band[k] = first;
+                break;
+            }
+            band[k] = band[src];
+            k = src;
+        }
+    }
+}
+
+/// [`transpose_band`] for a band at `base` that continues from `g` into `spill`.
+#[cold]
+fn transpose_band_split(g: &mut [f32], spill: &mut [f32], base: usize, len: usize) {
+    let n = 3 * len;
+    let glen = g.len();
+    let get = |g: &[f32], spill: &[f32], i: usize| -> f32 {
+        let i = base + i;
+        if i < glen {
+            g[i]
+        } else {
+            spill.get(i - glen).copied().unwrap_or(0.0)
+        }
+    };
+    let set = |g: &mut [f32], spill: &mut [f32], i: usize, v: f32| {
+        let i = base + i;
+        if i < glen {
+            g[i] = v;
+        } else if let Some(x) = spill.get_mut(i - glen) {
+            *x = v;
+        }
+    };
+    let mut visited = [0u32; 7];
+    for start in 0..n {
+        if visited[start / 32] & (1 << (start % 32)) != 0 {
+            continue;
+        }
+        let first = get(g, spill, start);
+        let mut k = start;
+        loop {
+            visited[k / 32] |= 1 << (k % 32);
+            let src = (k % 3) * len + k / 3;
+            if src == start {
+                set(g, spill, k, first);
+                break;
+            }
+            let v = get(g, spill, src);
+            set(g, spill, k, v);
+            k = src;
+        }
     }
 }
 

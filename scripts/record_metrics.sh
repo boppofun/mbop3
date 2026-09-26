@@ -7,7 +7,7 @@ hist=metrics/history.tsv
 boppo=${BOPPO_CORPUS:-$HOME/Projects/boppo/device_files/build/sd}
 
 if [ ! -f "$hist" ]; then
-  printf "date\tchange\tdescription\tcheck\tdecoder_bytes\thost_stack\thost_stack_c\thost_time_ratio_vs_c\txtensa_O3\txtensa_Os\tc_xtensa_Os\tunsafe\n" > "$hist"
+  printf "date\tchange\tdescription\tcheck\tdecoder_bytes\thost_stack\thost_stack_c\thost_time_ratio_vs_c\txtensa_O3\txtensa_Os\tc_xtensa_Os\tunsafe\txtensa_stack_Os\n" > "$hist"
 fi
 
 # Attribute to the working copy change, or its parent if the working copy is empty.
@@ -27,9 +27,11 @@ sizes=$(scripts/code_size.sh)
 o3=$(echo "$sizes" | awk '/mbop3_O3/ {print $2}')
 os=$(echo "$sizes" | awk '/mbop3_Os/ {print $2}')
 cos=$(echo "$sizes" | awk '/minimp3_Os/ {print $2}')
-unsafe=$( (grep -rn "unsafe" mbop3/src || true) | (grep -v "forbid(unsafe_code)" || true) | wc -l)
+# Deepest call chain estimate: the 3 largest frames (decode, decode_granule, a leaf).
+xstack=$(scripts/xtensa_stack.sh release-s 3 | awk '{s += $1} END {print s}')
+unsafe=$( (grep -rn "unsafe" mbop3/src --exclude=profile.rs || true) | (grep -v "(unsafe_code)" || true) | wc -l)
 
-row=$(printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" "$(date -Iseconds)" "$change" "$desc" "$check" "$dec" "$stack" "$stack_c" "$ratio" "$o3" "$os" "$cos" "$unsafe")
+row=$(printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" "$(date -Iseconds)" "$change" "$desc" "$check" "$dec" "$stack" "$stack_c" "$ratio" "$o3" "$os" "$cos" "$unsafe" "$xstack")
 echo "$row" >> "$hist"
 column -t -s $'\t' "$hist" | tail -n 3
 [ "$check" = PASS ] || { echo "regression check FAILED, see /tmp/mbop3_check.$$"; exit 1; }

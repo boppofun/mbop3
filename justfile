@@ -73,6 +73,6 @@ fmt:
 clippy:
     cargo clippy --workspace --release -- -D warnings
 
-# Count of `unsafe` in the decoder crate.
+# Count of `unsafe` in the decoder crate (excluding the dev-only profile feature).
 unsafe-count:
-    @grep -rn "unsafe" mbop3/src | grep -v "forbid(unsafe_code)" | wc -l
+    @grep -rn "unsafe" mbop3/src --exclude=profile.rs | grep -v "(unsafe_code)" | wc -l

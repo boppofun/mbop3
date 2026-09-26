@@ -256,7 +256,6 @@ fn decode_granule(
 
     for ch in 0..nch {
         let gr = &gr_info[ch];
-        let g = &mut grbuf[576 * ch..576 * ch + 576];
         let mut aa_bands = 31;
         let n_long_bands =
             (if gr.mixed_block_flag != 0 { 2 } else { 0 }) << (hdr.my_sample_rate() == 2) as u32;
@@ -264,13 +263,22 @@ fn decode_granule(
         crate::timed!(4, {
             if gr.n_short_sfb != 0 {
                 aa_bands = n_long_bands as i32 - 1;
+                // What follows this channel's grbuf in minimp3's scratch struct.
+                let (ch0, ch1) = grbuf.split_at_mut(576);
+                let (g, spill): (&mut [f32], &mut [f32]) = if ch == 0 {
+                    (ch0, ch1)
+                } else {
+                    (ch1, &mut scf[..])
+                };
                 layer3::reorder(
                     &mut g[n_long_bands * 18..],
+                    spill,
                     &gr.sfbtab()[gr.n_long_sfb as usize..],
                 );
             }
-            layer3::antialias(g, aa_bands);
         });
+        let g = &mut grbuf[576 * ch..576 * ch + 576];
+        crate::timed!(4, layer3::antialias(g, aa_bands));
         crate::timed!(5, {
             layer3::imdct_gr(g, &mut mdct_overlap[ch], gr.block_type, n_long_bands);
             layer3::change_sign(g);
