@@ -1,5 +1,29 @@
 //! mbop3: a small `no_std` MP3 (MPEG-1/2/2.5 Layer III) decoder, derived from
-//! [minimp3](https://github.com/lieff/minimp3).
+//! [minimp3](https://github.com/lieff/minimp3) (CC0) via a c2rust translation,
+//! then cleaned up and tuned for microcontrollers (the ESP32-S3 in particular).
+//!
+//! Priorities, in order: stack use, memory, CPU, code size.
+//!
+//! The crate is 100% safe Rust: it is `#![forbid(unsafe_code)]` (the only
+//! exception is the development-only `profile` feature). Corrupt or malicious
+//! input cannot cause memory unsafety, and the decoder is fuzzed against
+//! C minimp3 on arbitrary input.
+//!
+//! Pronounced mmm-bop-3.
+//!
+//! # Features
+//!
+//! None are enabled by default, and the crate needs no allocator.
+//!
+//! - `alloc`: adds `Decoder::new_boxed()`, which allocates the (12 KB) decoder
+//!   zeroed on the heap. `Box::new(Decoder::new())` can build it on the stack
+//!   first. Without `alloc`, put the decoder in a `static` (it lands in `.bss`)
+//!   or another long-lived place.
+//! - `exact`: evaluates floating point in exactly minimp3's order, so output is
+//!   bit-identical to C minimp3 on targets that don't fuse multiply-adds.
+//!   Slower on the ESP32-S3.
+//! - `profile`: per-stage cycle counters, for tuning. Development only, and the
+//!   only feature that uses `unsafe`.
 //!
 //! ```no_run
 //! let mp3: &[u8] = &[]; // at least several frames of input

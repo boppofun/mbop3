@@ -12,8 +12,8 @@ const MAX_BITRESERVOIR_BYTES: usize = 511;
 ///
 /// This holds all of the decoder's memory (including per-frame working
 /// memory) so decoding uses little stack. Keep it on the heap
-/// ([`Decoder::new_boxed`]) or in a static: `Decoder::new()` is all zeros so
-/// a static decoder is placed in `.bss`.
+/// (`Decoder::new_boxed()`, feature `alloc`) or in a static: `Decoder::new()`
+/// is all zeros so a static decoder is placed in `.bss`.
 #[derive(Clone)]
 #[cfg_attr(feature = "alloc", derive(zerocopy::FromZeros))]
 pub struct Decoder {
