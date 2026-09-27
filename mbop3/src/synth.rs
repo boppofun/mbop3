@@ -239,6 +239,8 @@ fn accumulate4(h: &Hist, rows: &[usize; 17], w: &[f32; 16], q: usize) -> ([f32; 
         col!(2);
         col!(3);
     }
+    // rustfmt misindents the nested macro.
+    #[rustfmt::skip]
     macro_rules! step {
         ($k:expr, $sub:tt) => {{
             rz = if rz >= 64 { rz - 64 } else { rz + LEN - 64 };
@@ -251,11 +253,11 @@ fn accumulate4(h: &Hist, rows: &[usize; 17], w: &[f32; 16], q: usize) -> ([f32; 
             let vy: &[f32; 4] = h[ry..ry + 4].try_into().unwrap();
             let (w0, w1) = (w[2 * $k], w[2 * $k + 1]);
             macro_rules! col {
-                                ($j:expr) => {
-                                    b[$j] += vz[$j] * w1 + vy[$j] * w0;
-                                    a[$j] $sub vz[$j] * w0 - vy[$j] * w1;
-                                };
-                            }
+                ($j:expr) => {
+                    b[$j] += vz[$j] * w1 + vy[$j] * w0;
+                    a[$j] $sub vz[$j] * w0 - vy[$j] * w1;
+                };
+            }
             col!(0);
             col!(1);
             col!(2);
