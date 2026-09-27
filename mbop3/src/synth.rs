@@ -88,7 +88,7 @@ pub(crate) const HIST_ROWS: usize = 18;
 pub(crate) type Hist = [f32; HIST_ROWS * 64];
 
 /// Column `c` of the last group of 4 columns, over rows `m0..m0 + 15` of `rows`.
-#[inline(always)]
+#[inline(never)]
 fn synth_pair<S: Sample>(
     out: &mut [S],
     p: usize,
