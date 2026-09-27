@@ -6,6 +6,13 @@ license.workspace = true
 description = "A small, no_std MP3 (MPEG-1/2/2.5 Layer III) decoder derived from minimp3, tuned for microcontrollers."
 categories = ["multimedia::audio", "no-std", "embedded"]
 keywords = ["mp3", "decoder", "audio", "no_std", "embedded"]
+repository = "https://github.com/boppofun/mbop3"
+# README.md and the licenses are symlinks to the workspace root's. The tests need
+# mbop3-reference, which isn't published.
+exclude = ["/tests"]
+
+[package.metadata.docs.rs]
+features = ["alloc"]
 
 [features]
 # Decoder::new_boxed(), which allocates the decoder zeroed on the heap instead

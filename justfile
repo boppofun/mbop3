@@ -86,3 +86,60 @@ fuzz mode="exact" secs="300":
     cp -n corpus/external/minimp3/vectors/*.bit corpus/generated/*.mp3 fuzz/corpus/differential/ 2>/dev/null || true
     flags=""; [ "{{mode}}" = fast ] && flags="--no-default-features"
     cd fuzz && cargo +nightly fuzz run $flags differential corpus/differential -- -max_total_time={{secs}} -max_len=65536
+
+# Release (release-plz, run locally: the checks need the Boppo corpus).
+#   1. just release-prepare   checks, then bump the version and update mbop3/CHANGELOG.md
+#   2. edit the changelog
+#   3. just release-commit    commit, move main to it and push
+#   4. just release-execute   checks again, publish to crates.io, tag and push the tag
+
+# A no_std target without an allocator, to catch stray std (or alloc) use.
+nostd_target := "riscv32imc-unknown-none-elf"
+
+release-checks: build
+    cargo fmt --all --check
+    just clippy
+    cargo clippy -p mbop3 --features alloc,exact --target {{nostd_target}} -- -D warnings
+    cargo build -p mbop3 --release --target {{nostd_target}}
+    cargo build -p mbop3 --release --target {{nostd_target}} --features alloc
+    cargo test --release --workspace -q
+    cargo test --release -p mbop3 -q --features alloc,exact
+    RUSTDOCFLAGS="-D warnings" cargo doc -p mbop3 --no-deps --features alloc
+    just check-full
+    cargo publish -p mbop3 --dry-run
+
+# @ must be empty and @- must be main.
+_require-main:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(jj log -r main -T commit_id --no-graph)" != "$(jj log -r @- -T commit_id --no-graph)" ]; then
+        echo "@- is not main"; exit 1
+    fi
+    if [ -n "$(jj diff --summary)" ]; then
+        echo "the working copy has changes"; exit 1
+    fi
+
+release-prepare: _require-main release-checks
+    release-plz update
+    @echo "Now edit mbop3/CHANGELOG.md, then run just release-commit"
+
+release-commit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "mbop3") | .version')
+    jj commit -m "chore(release): v$version"
+    jj bookmark set main -r @-
+    jj git push -b main
+
+_require-main-pushed:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(jj log -r main -T commit_id --no-graph)" != "$(jj log -r main@origin -T commit_id --no-graph)" ]; then
+        echo "main is not pushed"; exit 1
+    fi
+
+release-execute-dry-run: _require-main _require-main-pushed release-checks
+    release-plz release --dry-run
+
+release-execute: _require-main _require-main-pushed release-checks
+    release-plz release
