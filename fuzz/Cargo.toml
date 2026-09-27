@@ -1,0 +1,29 @@
+[package]
+name = "mbop3-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+# Bit-exact comparison with C minimp3. Without it (--no-default-features) the
+# fast build is fuzzed and only the frame structure is compared.
+default = ["exact"]
+exact = ["mbop3/exact"]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mbop3 = { path = "../mbop3" }
+mbop3-reference = { path = "../reference" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "differential"
+path = "fuzz_targets/differential.rs"
+test = false
+doc = false
+bench = false

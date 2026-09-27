@@ -76,3 +76,13 @@ clippy:
 # Count of `unsafe` in the decoder crate (excluding the dev-only profile feature).
 unsafe-count:
     @grep -rn "unsafe" mbop3/src --exclude=profile.rs | grep -v "(unsafe_code)" | wc -l
+
+# Differential fuzzing against C minimp3 (needs cargo-fuzz and nightly). `exact` compares
+# PCM bit for bit; `fast` fuzzes the default build and compares frame structure.
+fuzz mode="exact" secs="300":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p fuzz/corpus/differential
+    cp -n corpus/external/minimp3/vectors/*.bit corpus/generated/*.mp3 fuzz/corpus/differential/ 2>/dev/null || true
+    flags=""; [ "{{mode}}" = fast ] && flags="--no-default-features"
+    cd fuzz && cargo +nightly fuzz run $flags differential corpus/differential -- -max_total_time={{secs}} -max_len=65536

@@ -289,15 +289,20 @@ fn synth<S: Sample, const NCH: usize>(g: &[f32; 1152], xl: usize, out: &mut [S],
 
 /// Synthesizes one granule (576 samples per channel) from `g` (576 subband
 /// samples per channel) into `pcm`.
+///
+/// A channel that isn't `active` is all zeros, and so is its DCT-II.
 pub(crate) fn synth_granule<S: Sample>(
     h: &mut Hist,
     g: &mut [f32; 1152],
     nch: usize,
+    active: [bool; 2],
     pcm: &mut [S],
 ) {
     crate::timed!(6, {
         for i in 0..nch {
-            dct_ii((&mut g[576 * i..576 * i + 576]).try_into().unwrap(), 18);
+            if active[i] {
+                dct_ii((&mut g[576 * i..576 * i + 576]).try_into().unwrap(), 18);
+            }
         }
     });
     crate::timed!(7, {

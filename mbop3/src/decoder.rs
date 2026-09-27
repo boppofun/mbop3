@@ -36,6 +36,9 @@ struct Work {
     grbuf: [f32; 576 * 2],
     scf: [f32; 40],
     ist_pos: [[u8; 39]; 2],
+    /// Whether grbuf's channel 1 half may be nonzero (it is only used by
+    /// stereo frames, and by rare corrupt mono ones).
+    grbuf1_dirty: bool,
 }
 
 impl Default for Decoder {
@@ -59,6 +62,7 @@ impl Decoder {
                 grbuf: [0.0; 576 * 2],
                 scf: [0.0; 40],
                 ist_pos: [[0; 39]; 2],
+                grbuf1_dirty: false,
             },
         }
     }
@@ -178,8 +182,16 @@ impl Decoder {
                 let nch = info.channels as usize;
                 let granules = if hdr.test_mpeg1() { 2 } else { 1 };
                 for igr in 0..granules {
-                    w.grbuf.fill(0.0);
-                    decode_granule(
+                    // minimp3 zeroes both channels; channel 1 is only zeroed
+                    // when it may have been written.
+                    let (ch0, ch1) = w.grbuf.split_at_mut(576);
+                    ch0.fill(0.0);
+                    if w.grbuf1_dirty || nch == 2 {
+                        ch1.fill(0.0);
+                    }
+                    let gr = &w.gr_info[igr * nch..];
+                    w.grbuf1_dirty = nch == 2 || hdr.test_i_stereo() || gr[0].n_short_sfb != 0;
+                    let active = decode_granule(
                         hdr,
                         &mut bs,
                         &w.gr_info[igr * nch..],
@@ -194,6 +206,7 @@ impl Decoder {
                         &mut self.synth_hist,
                         &mut w.grbuf,
                         nch,
+                        active,
                         &mut pcm[igr * 576 * nch..],
                     );
                 }
@@ -233,7 +246,8 @@ fn decode_granule(
     ist_pos: &mut [[u8; 39]; 2],
     mdct_overlap: &mut [[f32; 288]; 2],
     overlap_bands: &mut [u8; 2],
-) {
+) -> [bool; 2] {
+    let mut active = [false; 2];
     // Values of each channel that may be nonzero. grbuf is zeroed before each
     // granule, so everything after what Huffman decoding wrote is zero.
     let mut nonzero = [576usize; 2];
@@ -301,7 +315,9 @@ fn decode_granule(
         let g = &mut grbuf[576 * ch..576 * ch + 576];
         // Antialiasing mixes each band with the next.
         crate::timed!(4, layer3::antialias(g, aa_bands.min(bands as i32)));
-        bands = (bands + 1).min(32);
+        if bands > 0 {
+            bands = (bands + 1).min(32);
+        }
         // A band with zero input and zero overlap has zero output and overlap.
         let imdct_bands = bands.max(overlap_bands[ch] as usize);
         crate::timed!(5, {
@@ -315,7 +331,9 @@ fn decode_granule(
             layer3::change_sign(g, imdct_bands);
         });
         overlap_bands[ch] = bands as u8;
+        active[ch] = imdct_bands > 0;
     }
+    active
 }
 
 /// Which main data bytes to keep as the next frame's bit reservoir: (start, len).
