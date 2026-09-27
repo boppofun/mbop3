@@ -88,15 +88,16 @@ fuzz mode="exact" secs="300":
     cd fuzz && cargo +nightly fuzz run $flags differential corpus/differential -- -max_total_time={{secs}} -max_len=65536
 
 # Release (release-plz, run locally: the checks need the Boppo corpus).
-#   1. just release-prepare   checks, then bump the version and update mbop3/CHANGELOG.md
-#   2. edit the changelog
-#   3. just release-commit    commit, move main to it and push
-#   4. just release-execute   checks again, publish to crates.io, tag and push the tag
+#   just release-1-checks            everything, including check-full and a publish dry run
+#   just release-2-prepare           bump the version and update mbop3/CHANGELOG.md; then edit the changelog
+#   just release-3-commit            commit, move main to it and push
+#   just release-4-execute-dry-run   what release-plz would publish
+#   just release-5-execute           publish to crates.io, tag, push the tag and make the GitHub release (needs GIT_TOKEN)
 
 # A no_std target without an allocator, to catch stray std (or alloc) use.
 nostd_target := "riscv32imc-unknown-none-elf"
 
-release-checks: build
+release-1-checks: _require-main build
     cargo fmt --all --check
     just clippy
     cargo clippy -p mbop3 --features alloc,exact --target {{nostd_target}} -- -D warnings
@@ -107,6 +108,24 @@ release-checks: build
     RUSTDOCFLAGS="-D warnings" cargo doc -p mbop3 --no-deps --features alloc
     just check-full
     cargo publish -p mbop3 --dry-run
+
+release-2-prepare: _require-main
+    release-plz update
+    @echo "Now edit mbop3/CHANGELOG.md, then run just release-3-commit"
+
+release-3-commit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "mbop3") | .version')
+    jj commit -m "chore(release): v$version"
+    jj bookmark set main -r @-
+    jj git push -b main
+
+release-4-execute-dry-run: _require-main _require-main-pushed
+    release-plz release --dry-run
+
+release-5-execute: _require-git-token _require-main _require-main-pushed
+    release-plz release
 
 # @ must be empty and @- must be main.
 _require-main:
@@ -119,18 +138,6 @@ _require-main:
         echo "the working copy has changes"; exit 1
     fi
 
-release-prepare: _require-main release-checks
-    release-plz update
-    @echo "Now edit mbop3/CHANGELOG.md, then run just release-commit"
-
-release-commit:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    version=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "mbop3") | .version')
-    jj commit -m "chore(release): v$version"
-    jj bookmark set main -r @-
-    jj git push -b main
-
 _require-main-pushed:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -138,8 +145,9 @@ _require-main-pushed:
         echo "main is not pushed"; exit 1
     fi
 
-release-execute-dry-run: _require-main _require-main-pushed release-checks
-    release-plz release --dry-run
-
-release-execute: _require-main _require-main-pushed release-checks
-    release-plz release
+# release-plz uses it for the GitHub release.
+_require-git-token:
+    #!/usr/bin/env bash
+    if [ -z "${GIT_TOKEN:-}" ]; then
+        echo "GIT_TOKEN is not set (a GitHub token with contents: write on boppofun/mbop3)"; exit 1
+    fi
