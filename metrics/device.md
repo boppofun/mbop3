@@ -10,6 +10,11 @@ Stack = drop in the high water mark of a fresh 48 KB thread (`... stack` mode).
 | 2026-09-27 | lvuyvuwx (new_boxed) | 0.118 s | 0.134 s | < 3 KB (below the test's own logging) | 18.8 KB | 19.3 KB | 13.5 KB |
 | 2026-09-27 | (profile, bounds provable synth) | 0.107-0.117 s | 0.134-0.141 s | < 3 KB | 18.8 KB | 19.3 KB | 13.5 KB |
 | 2026-09-27 | qrzyqxpn (split accumulators, opt-level "s") | 0.081 s | 0.140 s | < 3 KB | 18.8 KB | 19.3 KB | 13.5 KB |
+| 2026-09-27 | szlzvskv (zero band skip, stereo kernel) | 0.077-0.079 s | 0.140 s | < 3 KB | 18.8 KB | 19.3 KB | 13.5 KB |
+
+Stereo (`... mbop3_test_stereo.mp3`: corpus/generated/mode_j_stereo.mp3, 44.1 kHz joint stereo
+128 kbps, uploaded to /sd/activities): through awedio, 48000 interleaved samples (0.54 s):
+mbop3 0.075-0.077 s, rmp3 0.084 s. Raw mbop3: 1.1 s of audio in 0.138-0.146 s (~13% of a core).
 
 `mbop3_raw_perf_test` (mbop3 without awedio, decoder in PSRAM): 0.072-0.079 s per 1 s of audio
 (~7.5% of one core for 48 kHz mono). Decoder in internal RAM instead: no measurable difference.
@@ -24,6 +29,11 @@ Heap includes awedio's 4.6 KB output and 2 KB input buffers for both decoders.
 | lvuyvuwx+profile | 4.0 | 6.6 | 13.1 | 0.2 | 4.8 | 14.8 | 15.2 | 64.6 |
 | bounds provable synth | 3.5 | 4.3 | 11.1 | 0.1 | 4.2 | 12.7 | 12.1 | 44.1 |
 | qrzyqxpn, opt-level "s" | 0.7 | 1.5 | 9.5 | 0.03 | 4.2 | 14.0 | 12.3 | 28.1 |
+| szlzvskv (zero band skip) | 0.7 | 1.5 | 9.3 | 0.03 | 3.2 | 9.7 | 11.8 | 29.4 |
+
+Tried and dropped (slower on the ESP32-S3 with this compiler, see the experiment changes):
+fixed point synthesis (wuwwpwko), two-lane F2 DCT-II/IMDCT (xkpkukux), two-lane DCT-II stage 2
+only, outlining the synthesis accumulate kernel, split linbits/no-linbits Huffman loops.
 
 Hot-cache kernel cycles per mono granule (qrzyqxpn): synth 77k, dct_ii 35k, imdct 37k.
 FPU micro benchmark (cycles per iteration): dependent madd.s chain 10, 4 independent chains 4

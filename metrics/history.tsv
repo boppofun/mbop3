@@ -9,3 +9,4 @@ date	change	description	check	decoder_bytes	host_stack	host_stack_c	host_time_ra
 2026-09-27T08:46:34+09:00	qrzyqxpn	fix panic on MPEG-2.5 8 kHz mixed blocks (reproduce minimp3's reorder overrun)	PASS	12388	751	16439	0.868	35112	26216	22516	0	1248
 2026-09-27T09:06:59+09:00	sxmxnsqt	skip antialias/IMDCT of all-zero bands	PASS	12392	767	16439	0.834	35336	26567	22516	0	1280
 2026-09-27T09:14:49+09:00	klwzqppw	don't inline synth_pair (-2.1 KB code)	PASS	12392	767	16439	0.864	33677	24115	22516	0	1120
+2026-09-27T09:46:55+09:00	zqvuxstl	metrics: stereo and latest device numbers	PASS	12392	783	16439	0.821	32098	24181	22516	0	1120
