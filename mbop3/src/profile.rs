@@ -73,7 +73,7 @@ pub fn bench_kernels(iters: u32) -> [u32; 3] {
     out[1] = now().wrapping_sub(start) / iters;
     let start = now();
     for _ in 0..iters {
-        crate::layer3::imdct_gr(&mut g[..576], &mut overlap, 0, 0);
+        crate::layer3::imdct_gr(&mut g[..576], &mut overlap, 0, 0, 32);
     }
     out[2] = now().wrapping_sub(start) / iters;
     core::hint::black_box((&pcm, &g));

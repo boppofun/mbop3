@@ -284,6 +284,7 @@ fn pow_43(mut x: i32) -> f32 {
 }
 
 /// Huffman decodes and dequantizes one granule of one channel into `dst`.
+/// Returns how many values were written: the rest of `dst` is untouched.
 ///
 /// Reads ahead of the bit reader's limit (like minimp3); bytes past the end
 /// of the buffer read as zero.
@@ -293,7 +294,7 @@ pub(crate) fn huffman(
     gr: &GrInfo,
     scf: &[f32; 40],
     layer3gr_limit: i32,
-) {
+) -> usize {
     let (head, tail) = bs.split_from(0);
     let byte = |i: usize| match head.get(i) {
         Some(b) => *b as u32,
@@ -434,6 +435,7 @@ pub(crate) fn huffman(
     }
 
     bs.pos = layer3gr_limit;
+    d
 }
 
 /// Mid/side stereo on `n` values starting at `o` (left) and `o + 576` (right).
@@ -759,9 +761,10 @@ fn imdct_short(g: &mut [f32], overlap: &mut [f32], nbands: usize) {
     }
 }
 
-pub(crate) fn change_sign(g: &mut [f32]) {
+/// Negates odd values of odd bands, for bands 0..nbands.
+pub(crate) fn change_sign(g: &mut [f32], nbands: usize) {
     let mut base = 18;
-    for _ in (0..32).step_by(2) {
+    for _ in (1..nbands).step_by(2) {
         for i in (1..18).step_by(2) {
             g[base + i] = -g[base + i];
         }
@@ -769,11 +772,13 @@ pub(crate) fn change_sign(g: &mut [f32]) {
     }
 }
 
+/// IMDCT of bands 0..nbands (the others must have zero input and overlap).
 pub(crate) fn imdct_gr(
     g: &mut [f32],
     overlap: &mut [f32; 288],
     block_type: u8,
     n_long_bands: usize,
+    nbands: usize,
 ) {
     if n_long_bands > 0 {
         imdct36(g, overlap, &G_MDCT_WINDOW[0], n_long_bands);
@@ -781,13 +786,13 @@ pub(crate) fn imdct_gr(
     let g = &mut g[18 * n_long_bands..];
     let overlap = &mut overlap[9 * n_long_bands..];
     if block_type == SHORT_BLOCK_TYPE {
-        imdct_short(g, overlap, 32 - n_long_bands);
+        imdct_short(g, overlap, nbands.max(n_long_bands) - n_long_bands);
     } else {
         imdct36(
             g,
             overlap,
             &G_MDCT_WINDOW[(block_type == STOP_BLOCK_TYPE) as usize],
-            32 - n_long_bands,
+            nbands.max(n_long_bands) - n_long_bands,
         );
     }
 }

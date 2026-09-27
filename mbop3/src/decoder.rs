@@ -23,6 +23,8 @@ pub struct Decoder {
     free_format_bytes: i32,
     header: [u8; 4],
     reserv_buf: [u8; MAX_BITRESERVOIR_BYTES],
+    /// Per channel: bands of mdct_overlap that may be nonzero.
+    overlap_bands: [u8; 2],
     work: Work,
 }
 
@@ -51,6 +53,7 @@ impl Decoder {
             free_format_bytes: 0,
             header: [0; 4],
             reserv_buf: [0; MAX_BITRESERVOIR_BYTES],
+            overlap_bands: [0; 2],
             work: Work {
                 gr_info: [GrInfo::ZERO; 4],
                 grbuf: [0.0; 576 * 2],
@@ -79,6 +82,7 @@ impl Decoder {
         self.free_format_bytes = 0;
         self.header = [0; 4];
         self.reserv_buf = [0; MAX_BITRESERVOIR_BYTES];
+        self.overlap_bands = [0; 2];
     }
 
     /// Finds and decodes the next frame in `mp3`.
@@ -184,6 +188,7 @@ impl Decoder {
                         &mut w.scf,
                         &mut w.ist_pos,
                         &mut self.mdct_overlap,
+                        &mut self.overlap_bands,
                     );
                     synth_granule(
                         &mut self.synth_hist,
@@ -227,14 +232,18 @@ fn decode_granule(
     scf: &mut [f32; 40],
     ist_pos: &mut [[u8; 39]; 2],
     mdct_overlap: &mut [[f32; 288]; 2],
+    overlap_bands: &mut [u8; 2],
 ) {
+    // Values of each channel that may be nonzero. grbuf is zeroed before each
+    // granule, so everything after what Huffman decoding wrote is zero.
+    let mut nonzero = [576usize; 2];
     for ch in 0..nch {
         let layer3gr_limit = bs.pos + gr_info[ch].part_23_length as i32;
         crate::timed!(
             1,
             layer3::decode_scalefactors(hdr, &mut ist_pos[ch], bs, &gr_info[ch], scf, ch)
         );
-        crate::timed!(
+        nonzero[ch] = crate::timed!(
             2,
             layer3::huffman(
                 &mut grbuf[576 * ch..],
@@ -244,6 +253,11 @@ fn decode_granule(
                 layer3gr_limit,
             )
         );
+    }
+    if hdr.test_i_stereo() || hdr.is_ms_stereo() {
+        // Stereo processing mixes the channels.
+        let n = nonzero[0].max(nonzero[1]);
+        nonzero = [n; 2];
     }
 
     crate::timed!(3, {
@@ -277,12 +291,30 @@ fn decode_granule(
                 );
             }
         });
+        // Bands that may be nonzero. The exact build does all the work
+        // (skipped zeros could differ from minimp3's in sign).
+        let mut bands = if cfg!(feature = "exact") || gr.n_short_sfb != 0 {
+            32
+        } else {
+            nonzero[ch].div_ceil(18).min(32)
+        };
         let g = &mut grbuf[576 * ch..576 * ch + 576];
-        crate::timed!(4, layer3::antialias(g, aa_bands));
+        // Antialiasing mixes each band with the next.
+        crate::timed!(4, layer3::antialias(g, aa_bands.min(bands as i32)));
+        bands = (bands + 1).min(32);
+        // A band with zero input and zero overlap has zero output and overlap.
+        let imdct_bands = bands.max(overlap_bands[ch] as usize);
         crate::timed!(5, {
-            layer3::imdct_gr(g, &mut mdct_overlap[ch], gr.block_type, n_long_bands);
-            layer3::change_sign(g);
+            layer3::imdct_gr(
+                g,
+                &mut mdct_overlap[ch],
+                gr.block_type,
+                n_long_bands,
+                imdct_bands,
+            );
+            layer3::change_sign(g, imdct_bands);
         });
+        overlap_bands[ch] = bands as u8;
     }
 }
 
