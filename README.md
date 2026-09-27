@@ -28,8 +28,9 @@ just record        # check + measure stack/memory/speed/code size, append to met
 ```
 
 `just check` decodes every corpus file with both mbop3 and C minimp3 in lockstep and compares
-each frame's info and PCM. Every file is run through two input drivers: the whole file in one
-buffer, and a 2048 byte window that is topped up before each call (how awedio drives the decoder).
+each frame's info and PCM. Every file is run through three input drivers: the whole file in one
+buffer, a 2048 byte window that is topped up before each call (how awedio drives the decoder),
+and the whole file with no PCM buffer (parse only).
 
 Corpus tiers:
 
@@ -68,6 +69,12 @@ minimp3 reads its uninitialized stack scratch buffer on some corrupt streams (MS
 with `-ftrivial-auto-var-init=zero`, which makes it deterministic and matches the translation
 (c2rust zero-initializes locals). It is also built with `-ffp-contract=off` so C float math is
 plain IEEE single precision like Rust's.
+
+## Fuzzing
+
+`just fuzz exact 600` runs a cargo-fuzz differential target (nightly) that decodes arbitrary
+input with mbop3 and C minimp3 (whole input and a small window) and requires bit-identical
+output; `just fuzz fast 600` fuzzes the default build and compares frame structure.
 
 ## Using it on the ESP32-S3
 

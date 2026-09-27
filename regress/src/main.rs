@@ -239,7 +239,7 @@ fn check(args: &[String]) -> i32 {
         }
     }
 
-    let drivers = [Driver::Slice, Driver::Window(o.window)];
+    let drivers = [Driver::Slice, Driver::Window(o.window), Driver::Parse];
     let totals: Mutex<std::collections::BTreeMap<String, TierTotals>> = Default::default();
     let failures: Mutex<Vec<Failure>> = Default::default();
     let next = AtomicUsize::new(0);
@@ -314,7 +314,7 @@ fn check(args: &[String]) -> i32 {
         Criteria::Structure => "structure only",
     };
     println!(
-        "mbop3 vs minimp3 ({criteria}), i16 and f32 output, drivers: slice + window{}",
+        "mbop3 vs minimp3 ({criteria}), i16 and f32 output, drivers: slice, window{}, parse",
         o.window
     );
     println!(

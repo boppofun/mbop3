@@ -7,6 +7,8 @@ use crate::decoders::{Decoder, Info, MAX_SAMPLES_PER_FRAME, Sample};
 pub enum Driver {
     /// The whole file in one buffer, advancing by `frame_bytes` (like `mp3dec_load_buf`).
     Slice,
+    /// Like Slice but without a pcm buffer: frames are only parsed.
+    Parse,
     /// A fixed size window that is topped up from the file before every call
     /// (how awedio's Mp3Decoder drives rmp3, with a 2048 byte window).
     Window(usize),
@@ -16,6 +18,7 @@ impl std::fmt::Display for Driver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Driver::Slice => write!(f, "slice"),
+            Driver::Parse => write!(f, "parse"),
             Driver::Window(n) => write!(f, "window{n}"),
         }
     }
@@ -36,7 +39,7 @@ pub struct Feeder<'a> {
 impl<'a> Feeder<'a> {
     pub fn new(data: &'a [u8], driver: Driver) -> Self {
         let window = match driver {
-            Driver::Slice => Vec::new(),
+            Driver::Slice | Driver::Parse => Vec::new(),
             Driver::Window(n) => Vec::with_capacity(n),
         };
         Feeder {
@@ -56,7 +59,7 @@ impl<'a> Feeder<'a> {
     ) -> Option<(usize, Info)> {
         {
             let input: &[u8] = match self.driver {
-                Driver::Slice => &self.data[self.pos..],
+                Driver::Slice | Driver::Parse => &self.data[self.pos..],
                 Driver::Window(cap) => {
                     let take = (cap - self.window.len()).min(self.data.len() - self.pos);
                     self.window
@@ -69,16 +72,21 @@ impl<'a> Feeder<'a> {
                 return None;
             }
             self.offset = match self.driver {
-                Driver::Slice => self.pos,
+                Driver::Slice | Driver::Parse => self.pos,
                 Driver::Window(_) => self.pos - self.window.len(),
             };
-            let (samples, info) = dec.decode(input, Some(pcm));
+            let pcm = if self.driver == Driver::Parse {
+                None
+            } else {
+                Some(pcm)
+            };
+            let (samples, info) = dec.decode(input, pcm);
             let consumed = info.frame_bytes as usize;
             if consumed == 0 {
                 return None;
             }
             match self.driver {
-                Driver::Slice => self.pos += consumed,
+                Driver::Slice | Driver::Parse => self.pos += consumed,
                 Driver::Window(_) => {
                     self.window.drain(..consumed);
                 }
