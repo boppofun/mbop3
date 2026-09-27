@@ -215,6 +215,64 @@ fn accumulate(h: &Hist, rows: &[usize; 17], w: &[f32; 16], c: usize) -> (f32, f3
     }
 }
 
+/// The window sums of all 4 columns at `q` (stereo): (a, b), in exactly
+/// minimp3's order (see [`accumulate`]). With 8 independent sums there is
+/// enough independent work to cover the FPU's latency without splitting them.
+#[inline(always)]
+fn accumulate4(h: &Hist, rows: &[usize; 17], w: &[f32; 16], q: usize) -> ([f32; 4], [f32; 4]) {
+    const LEN: usize = HIST_ROWS * 64;
+    let mut rz = rows[15] + q;
+    let mut ry = rows[0] + q;
+    let (mut a, mut b) = ([0f32; 4], [0f32; 4]);
+    {
+        let vz: &[f32; 4] = h[rz..rz + 4].try_into().unwrap();
+        let vy: &[f32; 4] = h[ry..ry + 4].try_into().unwrap();
+        let (w0, w1) = (w[0], w[1]);
+        macro_rules! col {
+            ($j:expr) => {
+                b[$j] = vz[$j] * w1 + vy[$j] * w0;
+                a[$j] = vz[$j] * w0 - vy[$j] * w1;
+            };
+        }
+        col!(0);
+        col!(1);
+        col!(2);
+        col!(3);
+    }
+    macro_rules! step {
+        ($k:expr, $sub:tt) => {{
+            rz = if rz >= 64 { rz - 64 } else { rz + LEN - 64 };
+            ry = if ry + 64 >= LEN {
+                ry + 64 - LEN
+            } else {
+                ry + 64
+            };
+            let vz: &[f32; 4] = h[rz..rz + 4].try_into().unwrap();
+            let vy: &[f32; 4] = h[ry..ry + 4].try_into().unwrap();
+            let (w0, w1) = (w[2 * $k], w[2 * $k + 1]);
+            macro_rules! col {
+                        ($j:expr) => {
+                            b[$j] += vz[$j] * w1 + vy[$j] * w0;
+                            a[$j] $sub vz[$j] * w0 - vy[$j] * w1;
+                        };
+                    }
+            col!(0);
+            col!(1);
+            col!(2);
+            col!(3);
+        }};
+    }
+    let mut k = 1;
+    loop {
+        step!(k, -=); // odd k: a += y*w1 - z*w0, i.e. a -= z*w0 - y*w1
+        if k == 7 {
+            return (a, b);
+        }
+        step!(k + 1, +=);
+        k += 2;
+    }
+}
+
 /// Synthesizes 2 x 32 output samples per channel from subband sample rows
 /// `xl` and `xl + 1` of `g` into `out` (64 samples per channel).
 #[inline(never)]
@@ -265,11 +323,11 @@ fn synth<S: Sample, const NCH: usize>(g: &[f32; 1152], xl: usize, out: &mut [S],
         lo -= 18;
 
         let w: &[f32; 16] = G_WIN[16 * (14 - i)..16 * (14 - i) + 16].try_into().unwrap();
-        let (a0, b0, a2, b2) = accumulate(h, &rows, w, q);
-        let (a1, b1, a3, b3) = if stereo {
-            accumulate(h, &rows, w, q + 1)
+        let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = if stereo {
+            accumulate4(h, &rows, w, q)
         } else {
-            (0.0, 0.0, 0.0, 0.0)
+            let (a0, b0, a2, b2) = accumulate(h, &rows, w, q);
+            ([a0, 0.0, a2, 0.0], [b0, 0.0, b2, 0.0])
         };
 
         if stereo {
